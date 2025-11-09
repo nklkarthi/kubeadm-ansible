@@ -1,21 +1,54 @@
 # Kubeadm Ansible
 
-This repository contains Ansible playbooks to set up a Kubernetes cluster using `kubeadm`.
+This repository contains Ansible playbooks to set up a Kubernetes cluster using `kubeadm`. All playbooks are designed to be reusable across different cloud environments and user configurations.
 
 ## Prerequisites
 
 *   Ansible installed on your local machine.
 *   An SSH key pair. This guide assumes you have a key at `~/.ssh/id_acg.pub`.
-*   Three servers with a user named `cloud_user`.
+*   Three servers with a user account (default: `cloud_user`).
+
+## Configuration Variables
+
+The playbooks support the following variables for customization:
+
+- `target_user`: User account name (default: `cloud_user`)
+- `timezone`: System timezone (default: `UTC`)
+- `gitea_target_host`: Specific host for Gitea installation (default: second worker node)
+
+### Example with custom variables:
+```bash
+ansible-playbook -i setup/inventory setup/playbook.yml \
+  -e "target_user=ubuntu" \
+  -e "timezone=America/New_York"
+```
 
 ## SSH Setup
 
-Copy your SSH public key to each of the servers. This will allow Ansible to connect to them without a password.
+Copy your SSH public key to each of the servers. Replace hostnames and user as needed for your environment.
 
 ```bash
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@737f3fac481c.mylabserver.com
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@737f3fac482c.mylabserver.com
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@737f3fac483c.mylabserver.com
+ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-master-node.com
+ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-worker1-node.com
+ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-worker2-node.com
+```
+
+## Inventory Configuration
+
+Update `setup/inventory` with your server hostnames:
+
+```ini
+[cloud_servers]
+your-master-node.com ansible_user=cloud_user
+your-worker1-node.com ansible_user=cloud_user
+your-worker2-node.com ansible_user=cloud_user
+
+[master]
+your-master-node.com ansible_user=cloud_user
+
+[workers]
+your-worker1-node.com ansible_user=cloud_user
+your-worker2-node.com ansible_user=cloud_user
 ```
 
 ## Ansible Setup
@@ -71,5 +104,15 @@ Run the following Ansible playbooks in order to provision the servers and set up
 
 ## Access Information
 
-- **Kubernetes**: Use `kubectl` from the master node (`cloud_user@737f3fac481c.mylabserver.com`)
-- **Gitea**: Access via `http://[worker-node-ip]:3000` (if installed)
+- **Kubernetes**: Use `kubectl` from the master node
+- **Gitea**: Access via `http://[gitea-host]:3000` (if installed)
+
+## Reusability for New Cloud Environments
+
+These playbooks are designed to work with temporary cloud servers (e.g., 14-day lab environments). When you get new servers:
+
+1. Update the `setup/inventory` file with new hostnames
+2. Run the same playbooks without modification
+3. Use variables to customize user accounts and settings as needed
+
+No hardcoded values will break when switching to new cloud servers.
