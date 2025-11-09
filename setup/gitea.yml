@@ -28,7 +28,8 @@
 
     - name: Download Gitea binary
       ansible.builtin.get_url:
-        url: "https://dl.gitea.io/gitea/{{ gitea_version }}/gitea-{{ gitea_version }}-linux-amd64"
+        url: >
+          https://dl.gitea.io/gitea/{{ gitea_version }}/getea-{{ gitea_version }}-linux-amd64
         dest: /usr/local/bin/gitea
         mode: "0755"
         owner: root
@@ -49,7 +50,8 @@
           WorkingDirectory={{ gitea_home }}
           ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
           Restart=always
-          Environment=USER={{ gitea_user }} HOME={{ gitea_home }} GITEA_WORK_DIR=/var/lib/gitea
+          Environment=USER={{ gitea_user }} HOME={{ gitea_home }}
+          Environment=GITEA_WORK_DIR=/var/lib/gitea
 
           [Install]
           WantedBy=multi-user.target
@@ -108,14 +110,14 @@
       ansible.builtin.debug:
         msg: |
           Gitea Installation Complete:
-          
+
           External Access (Browser):
           http://{{ inventory_hostname }}:{{ gitea_port }}
-          
+
           ArgoCD Integration (Use Internal IP):
           http://{{ ansible_default_ipv4.address }}:{{ gitea_port }}
-          
+
           Repository URL for ArgoCD:
           http://{{ ansible_default_ipv4.address }}:{{ gitea_port }}/username/repo.git
-          
-          Note: Use the internal IP address in ArgoCD to avoid network timeouts.
+
+          Note: Use the internal IP address in ArgoCD to avoid timeouts.
