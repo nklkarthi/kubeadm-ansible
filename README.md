@@ -57,3 +57,19 @@ Run the following Ansible playbooks in order to provision the servers and set up
     ```bash
     ansible-playbook -i setup/inventory setup/kube_workers.yml
     ```
+
+7.  **Gitea (Optional):** This playbook installs Gitea on worker node 737f3fac482c.mylabserver.com.
+
+    ```bash
+    ansible-playbook -i setup/inventory setup/gitea.yml
+    ```
+
+## Services
+
+- **Kubernetes Cluster**: Master node with worker nodes ready for deployments
+- **Gitea**: Git service with web interface accessible on port 3000 (if installed)
+
+## Access Information
+
+- **Kubernetes**: Use `kubectl` from the master node (`cloud_user@737f3fac481c.mylabserver.com`)
+- **Gitea**: Access via `http://[worker-node-ip]:3000` (if installed)

@@ -1,0 +1,111 @@
+- name: Install Gitea on worker node
+  hosts: "{{ gitea_target_host | default('737f3fac482c.mylabserver.com') }}"
+  become: true
+  vars:
+    gitea_version: "1.25.1"
+    gitea_user: "git"
+    gitea_home: "/home/git"
+    gitea_port: 3000
+  tasks:
+    - name: Create git user
+      ansible.builtin.user:
+        name: "{{ gitea_user }}"
+        home: "{{ gitea_home }}"
+        shell: /bin/bash
+        system: true
+
+    - name: Create gitea directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ gitea_user }}"
+        group: "{{ gitea_user }}"
+        mode: "0755"
+      loop:
+        - "{{ gitea_home }}/gitea"
+        - "/var/lib/gitea"
+        - "/etc/gitea"
+
+    - name: Download Gitea binary
+      ansible.builtin.get_url:
+        url: "https://dl.gitea.io/gitea/{{ gitea_version }}/gitea-{{ gitea_version }}-linux-amd64"
+        dest: /usr/local/bin/gitea
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Create gitea systemd service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Gitea (Git with a cup of tea)
+          After=syslog.target
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ gitea_user }}
+          Group={{ gitea_user }}
+          WorkingDirectory={{ gitea_home }}
+          ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
+          Restart=always
+          Environment=USER={{ gitea_user }} HOME={{ gitea_home }} GITEA_WORK_DIR=/var/lib/gitea
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/gitea.service
+        mode: "0644"
+
+    - name: Create gitea configuration
+      ansible.builtin.copy:
+        content: |
+          APP_NAME = Gitea: Git with a cup of tea
+          RUN_MODE = prod
+
+          [repository]
+          ROOT = {{ gitea_home }}/gitea-repositories
+
+          [server]
+          HTTP_PORT = {{ gitea_port }}
+          DOMAIN = {{ inventory_hostname }}
+          ROOT_URL = http://{{ inventory_hostname }}:{{ gitea_port }}/
+
+          [database]
+          DB_TYPE = sqlite3
+          PATH = /var/lib/gitea/gitea.db
+
+          [session]
+          PROVIDER = file
+
+          [log]
+          MODE = file
+          LEVEL = info
+          ROOT_PATH = /var/lib/gitea/log
+
+          [security]
+          INSTALL_LOCK = false
+        dest: /etc/gitea/app.ini
+        owner: "{{ gitea_user }}"
+        group: "{{ gitea_user }}"
+        mode: "0640"
+
+    - name: Allow Gitea port in firewall
+      ansible.builtin.command: "ufw allow {{ gitea_port }}/tcp"
+      changed_when: false
+
+    - name: Reload UFW
+      ansible.builtin.command: ufw reload
+      changed_when: false
+
+    - name: Enable and start gitea service
+      ansible.builtin.systemd:
+        name: gitea
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Show Gitea access information
+      ansible.builtin.debug:
+        msg: >
+          Gitea is now accessible at:
+          http://{{ inventory_hostname }}:{{ gitea_port }}

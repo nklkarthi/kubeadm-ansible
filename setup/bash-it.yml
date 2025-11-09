@@ -2,7 +2,7 @@
   hosts: all
   vars:
     bash_it_repo: https://github.com/Bash-it/bash-it.git
-    bash_it_user: cloud_user
+    bash_it_user: "{{ target_user | default('cloud_user') }}"
     bash_it_dir: /home/{{ bash_it_user }}/.bash_it
     bash_it_backup_file: /home/{{ bash_it_user }}/.bashrc.bak
   tasks:

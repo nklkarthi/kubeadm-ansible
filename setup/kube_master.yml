@@ -1,6 +1,8 @@
 - name: Configure Kubernetes master
   hosts: master
   become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
   tasks:
     - name: Create an Empty file for Kubeadm configuring
       ansible.builtin.copy:
@@ -63,7 +65,7 @@
         kubeadm init --config /etc/kubernetes/kubeadm-config.yaml \
           >> cluster_initialized.log 2>&1
       args:
-        chdir: /home/cloud_user
+        chdir: /home/{{ kube_user }}
       failed_when: false
       changed_when: false
       register: kubeadm_result
@@ -74,11 +76,11 @@
 
     - name: Check kubeadm init log
       ansible.builtin.stat:
-        path: /home/cloud_user/cluster_initialized.log
+        path: /home/{{ kube_user }}/cluster_initialized.log
       register: init_log_stat
 
     - name: Display kubeadm init log if exists
-      ansible.builtin.command: cat /home/cloud_user/cluster_initialized.log
+      ansible.builtin.command: cat /home/{{ kube_user }}/cluster_initialized.log
       when: init_log_stat.stat.exists
       register: init_log_content
       failed_when: false
@@ -91,9 +93,9 @@
 
     - name: Create .kube directory
       become: true
-      become_user: cloud_user
+      become_user: "{{ kube_user }}"
       ansible.builtin.file:
-        path: /home/cloud_user/.kube
+        path: /home/{{ kube_user }}/.kube
         state: directory
         mode: "0755"
 
@@ -105,21 +107,21 @@
     - name: Copy admin.conf to User's kube config
       ansible.builtin.copy:
         src: /etc/kubernetes/admin.conf
-        dest: /home/cloud_user/.kube/config
+        dest: /home/{{ kube_user }}/.kube/config
         remote_src: true
-        owner: cloud_user
+        owner: "{{ kube_user }}"
         mode: "0644"
       when: admin_conf_stat.stat.exists
 
     - name: Install Pod Network
       become: true
-      become_user: cloud_user
+      become_user: "{{ kube_user }}"
       ansible.builtin.shell: |
-        export KUBECONFIG=/home/cloud_user/.kube/config
+        export KUBECONFIG=/home/{{ kube_user }}/.kube/config
         kubectl apply -f \
           https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/calico.yaml
       args:
-        chdir: /home/cloud_user
+        chdir: /home/{{ kube_user }}
       when: admin_conf_stat.stat.exists
       changed_when: false
       register: calico_result

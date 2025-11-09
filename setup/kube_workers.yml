@@ -24,6 +24,8 @@
 - name: Join Worker Nodes
   hosts: workers
   become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
   tasks:
     - name: Debug master host information
       ansible.builtin.debug:
@@ -69,6 +71,6 @@
       ansible.builtin.shell: |
         {{ hostvars[groups['master'][0]].join_command }} >> node_joined.log
       args:
-        chdir: /home/cloud_user
+        chdir: /home/{{ kube_user }}
         creates: node_joined.log
       changed_when: false
