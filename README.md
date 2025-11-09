@@ -97,6 +97,12 @@ Run the following Ansible playbooks in order to provision the servers and set up
     ansible-playbook -i setup/inventory setup/gitea.yml
     ```
 
+8.  **Get Internal IPs (Utility):** Get internal IP addresses for ArgoCD integration.
+
+    ```bash
+    ansible-playbook -i setup/inventory setup/get-internal-ips.yml
+    ```
+
 ## Services
 
 - **Kubernetes Cluster**: Master node with worker nodes ready for deployments
@@ -106,6 +112,21 @@ Run the following Ansible playbooks in order to provision the servers and set up
 
 - **Kubernetes**: Use `kubectl` from the master node
 - **Gitea**: Access via `http://[gitea-host]:3000` (if installed)
+
+## ArgoCD Integration
+
+When integrating Gitea with ArgoCD:
+
+1. **Get internal IP**: Run `ansible-playbook -i setup/inventory setup/get-internal-ips.yml`
+2. **Use internal IP address** in ArgoCD repository configuration
+3. **Repository URL format**: `http://[internal-ip]:3000/username/repo.git`
+4. **Why**: ArgoCD pods need direct internal network access, external hostnames cause routing timeouts
+
+### Quick Command:
+```bash
+# Get the internal IP for ArgoCD
+ansible-playbook -i setup/inventory setup/get-internal-ips.yml
+```
 
 ## Reusability for New Cloud Environments
 

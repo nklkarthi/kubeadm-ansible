@@ -1,1 +1,25 @@
-.ansible
+# Ansible runtime files
+*.retry
+.ansible/
+setup/.ansible/
+
+# Environment specific files
+setup/.env
+*.log
+
+# Temporary/diagnostic files
+setup/*-fix.yml
+setup/*-debug.yml
+setup/*-test.yml
+
+# Host-specific inventory (keep template)
+# setup/inventory.local
+
+# SSH keys and secrets
+*.pem
+*.key
+id_*
+
+# OS files
+.DS_Store
+Thumbs.db

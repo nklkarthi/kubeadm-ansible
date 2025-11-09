@@ -106,6 +106,16 @@
 
     - name: Show Gitea access information
       ansible.builtin.debug:
-        msg: >
-          Gitea is now accessible at:
+        msg: |
+          Gitea Installation Complete:
+          
+          External Access (Browser):
           http://{{ inventory_hostname }}:{{ gitea_port }}
+          
+          ArgoCD Integration (Use Internal IP):
+          http://{{ ansible_default_ipv4.address }}:{{ gitea_port }}
+          
+          Repository URL for ArgoCD:
+          http://{{ ansible_default_ipv4.address }}:{{ gitea_port }}/username/repo.git
+          
+          Note: Use the internal IP address in ArgoCD to avoid network timeouts.
