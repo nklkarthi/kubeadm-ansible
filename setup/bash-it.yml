@@ -1,0 +1,36 @@
+- name: Install Bash-it on all hosts
+  hosts: all
+  vars:
+    bash_it_repo: https://github.com/Bash-it/bash-it.git
+    bash_it_user: cloud_user
+    bash_it_dir: /home/{{ bash_it_user }}/.bash_it
+    bash_it_backup_file: /home/{{ bash_it_user }}/.bashrc.bak
+  tasks:
+    - name: Ensure git is installed
+      ansible.builtin.package:
+        name: git
+        state: present
+      become: true
+    - name: Clone Bash-it repository
+      ansible.builtin.git:
+        repo: "{{ bash_it_repo }}"
+        dest: "{{ bash_it_dir }}"
+        version: master
+        update: true
+      become: true
+      become_user: "{{ bash_it_user }}"
+    - name: Run Bash-it installer
+      ansible.builtin.command: "{{ bash_it_dir }}/install.sh --silent"
+      args:
+        chdir: "{{ bash_it_dir }}"
+        creates: "{{ bash_it_backup_file }}"
+      become: true
+      become_user: "{{ bash_it_user }}"
+
+    - name: Set bash-it theme to powerline
+      ansible.builtin.lineinfile:
+        path: /home/{{ bash_it_user }}/.bashrc
+        regexp: '^export BASH_IT_THEME='
+        line: 'export BASH_IT_THEME="powerline"'
+      become: true
+      become_user: "{{ bash_it_user }}"

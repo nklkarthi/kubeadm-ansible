@@ -1,0 +1,18 @@
+---
+- name: Configure passwordless sudo for cloud_user
+  hosts: all
+  become: true  # This ensures the playbook runs with root privileges
+  tasks:
+    - name: Add cloud_user to sudoers with NOPASSWD
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers
+        line: "cloud_user ALL=(ALL) NOPASSWD: ALL"
+        validate: "visudo -cf %s"
+
+- name: Configure system timezone
+  hosts: all
+  become: true
+  tasks:
+    - name: Set timezone to desired location
+      ansible.builtin.command: timedatectl set-timezone Asia/Singapore
+      changed_when: false

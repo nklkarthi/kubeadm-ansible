@@ -1,0 +1,11 @@
+[cloud_servers]
+737f3fac481c.mylabserver.com ansible_user=cloud_user
+737f3fac482c.mylabserver.com ansible_user=cloud_user
+737f3fac483c.mylabserver.com ansible_user=cloud_user
+
+[master]
+737f3fac481c.mylabserver.com ansible_user=cloud_user
+
+[workers]
+737f3fac482c.mylabserver.com ansible_user=cloud_user
+737f3fac483c.mylabserver.com ansible_user=cloud_user

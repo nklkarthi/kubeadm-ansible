@@ -1,0 +1,130 @@
+- name: Configure Kubernetes master
+  hosts: master
+  become: true
+  tasks:
+    - name: Create an Empty file for Kubeadm configuring
+      ansible.builtin.copy:
+        content: ""
+        dest: /etc/kubernetes/kubeadm-config.yaml
+        force: false
+        mode: "0644"
+
+    - name: Configure container runtime
+      ansible.builtin.blockinfile:
+        path: /etc/kubernetes/kubeadm-config.yaml
+        block: |
+          kind: ClusterConfiguration
+          apiVersion: kubeadm.k8s.io/v1beta3
+          controlPlaneEndpoint: "{{ ansible_default_ipv4.address }}:6443"
+          networking:
+            podSubnet: "10.244.0.0/16"
+          ---
+          kind: KubeletConfiguration
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          runtimeRequestTimeout: "15m"
+          cgroupDriver: "systemd"
+
+    - name: Remove existing containerd config
+      ansible.builtin.file:
+        path: /etc/containerd/config.toml
+        state: absent
+
+    - name: Generate new containerd config
+      ansible.builtin.shell: >
+        containerd config default > /etc/containerd/config.toml
+      changed_when: false
+
+    - name: Enable CRI plugin in containerd
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'disabled_plugins = \["cri"\]'
+        replace: 'disabled_plugins = []'
+
+    - name: Configure systemd cgroup driver
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Restart containerd service
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for containerd to be ready
+      ansible.builtin.wait_for:
+        path: /var/run/containerd/containerd.sock
+        timeout: 30
+
+    - name: Initialize the cluster
+      ansible.builtin.shell: |
+        kubeadm init --config /etc/kubernetes/kubeadm-config.yaml \
+          >> cluster_initialized.log 2>&1
+      args:
+        chdir: /home/cloud_user
+      failed_when: false
+      changed_when: false
+      register: kubeadm_result
+
+    - name: Show kubeadm result
+      ansible.builtin.debug:
+        msg: "Kubeadm init return code: {{ kubeadm_result.rc }}"
+
+    - name: Check kubeadm init log
+      ansible.builtin.stat:
+        path: /home/cloud_user/cluster_initialized.log
+      register: init_log_stat
+
+    - name: Display kubeadm init log if exists
+      ansible.builtin.command: cat /home/cloud_user/cluster_initialized.log
+      when: init_log_stat.stat.exists
+      register: init_log_content
+      failed_when: false
+      changed_when: false
+
+    - name: Show init log content
+      ansible.builtin.debug:
+        var: init_log_content.stdout_lines
+      when: init_log_stat.stat.exists
+
+    - name: Create .kube directory
+      become: true
+      become_user: cloud_user
+      ansible.builtin.file:
+        path: /home/cloud_user/.kube
+        state: directory
+        mode: "0755"
+
+    - name: Check if admin.conf exists
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf_stat
+
+    - name: Copy admin.conf to User's kube config
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/cloud_user/.kube/config
+        remote_src: true
+        owner: cloud_user
+        mode: "0644"
+      when: admin_conf_stat.stat.exists
+
+    - name: Install Pod Network
+      become: true
+      become_user: cloud_user
+      ansible.builtin.shell: |
+        export KUBECONFIG=/home/cloud_user/.kube/config
+        kubectl apply -f \
+          https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/calico.yaml
+      args:
+        chdir: /home/cloud_user
+      when: admin_conf_stat.stat.exists
+      changed_when: false
+      register: calico_result
+
+    - name: Show Calico installation result
+      ansible.builtin.debug:
+        var: calico_result.stdout_lines
+      when: admin_conf_stat.stat.exists and calico_result is defined
