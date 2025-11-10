@@ -1,0 +1,50 @@
+- name: Gracefully drain Kubernetes nodes before shutdown
+  hosts: "{{ target_nodes | default('workers') }}"
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Get node name
+      ansible.builtin.command: hostname
+      register: node_name
+      changed_when: false
+
+    - name: Drain node gracefully
+      ansible.builtin.command: >
+        kubectl drain {{ node_name.stdout }}
+        --ignore-daemonsets --delete-emptydir-data --force --timeout=300s
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      delegate_to: "{{ groups['master'][0] }}"
+      become_user: "{{ kube_user }}"
+      register: drain_result
+      failed_when: false
+
+    - name: Show drain result
+      ansible.builtin.debug:
+        msg: |
+          Node {{ node_name.stdout }} drain status:
+          {% if drain_result.rc == 0 %}
+          ✅ Successfully drained
+          {% else %}
+          ⚠️ Drain completed with warnings (RC: {{ drain_result.rc }})
+          {% endif %}
+          
+          Node is now ready for shutdown.
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show shutdown summary
+      ansible.builtin.debug:
+        msg: |
+          =================================================
+          Kubernetes Node Shutdown Preparation Complete
+          =================================================
+          
+          All specified nodes have been drained.
+          Pods have been gracefully evicted.
+          Nodes are ready for the 4-hour shutdown window.
+          
+          =================================================

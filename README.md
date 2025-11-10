@@ -103,6 +103,49 @@ Run the following Ansible playbooks in order to provision the servers and set up
     ansible-playbook -i setup/inventory setup/get-internal-ips.yml
     ```
 
+9.  **Gitea Webhook Fix (Optional):** Configure webhooks for existing Gitea installations.
+
+    ```bash
+    ansible-playbook -i setup/inventory setup/gitea-webhook-fix.yml
+    ```
+
+## Cluster Maintenance (4-Hour Window Management)
+
+For environments with 4-hour operational windows:
+
+10. **Before Shutdown:** Drain nodes gracefully before the 4-hour limit.
+
+    ```bash
+    # Drain all worker nodes
+    ansible-playbook -i setup/inventory setup/node-shutdown.yml
+    
+    # Drain specific nodes
+    ansible-playbook -i setup/inventory setup/node-shutdown.yml -e "target_nodes=specific-node"
+    ```
+
+11. **After Startup:** Uncordon nodes to make them schedulable again.
+
+    ```bash
+    # Uncordon all worker nodes
+    ansible-playbook -i setup/inventory setup/node-startup.yml
+    
+    # Uncordon specific nodes
+    ansible-playbook -i setup/inventory setup/node-startup.yml -e "target_nodes=specific-node"
+    ```
+
+12. **Unified Maintenance:** Single playbook for all maintenance operations.
+
+    ```bash
+    # Check cluster status
+    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=status"
+    
+    # Prepare for shutdown
+    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=shutdown"
+    
+    # Recover after startup
+    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=startup"
+    ```
+
 ## Services
 
 - **Kubernetes Cluster**: Master node with worker nodes ready for deployments
@@ -122,11 +165,17 @@ When integrating Gitea with ArgoCD:
 3. **Repository URL format**: `http://[internal-ip]:3000/username/repo.git`
 4. **Why**: ArgoCD pods need direct internal network access, external hostnames cause routing timeouts
 
-### Quick Command:
+### Quick Commands:
 ```bash
 # Get the internal IP for ArgoCD
 ansible-playbook -i setup/inventory setup/get-internal-ips.yml
+
+# Fix webhook permissions (if needed)
+ansible-playbook -i setup/inventory setup/gitea-webhook-fix.yml
 ```
+
+### Webhook Configuration:
+The Gitea installation automatically configures webhooks to allow the internal network (172.31.0.0/16). This enables ArgoCD to receive webhook notifications from Gitea repositories.
 
 ## Reusability for New Cloud Environments
 

@@ -86,6 +86,9 @@
 
           [security]
           INSTALL_LOCK = false
+
+          [webhook]
+          ALLOWED_HOST_LIST = 172.31.0.0/16
         dest: /etc/gitea/app.ini
         owner: "{{ gitea_user }}"
         group: "{{ gitea_user }}"

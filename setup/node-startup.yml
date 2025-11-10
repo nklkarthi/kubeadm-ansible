@@ -1,0 +1,65 @@
+- name: Uncordon Kubernetes nodes after startup
+  hosts: "{{ target_nodes | default('workers') }}"
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Wait for node to be ready
+      ansible.builtin.wait_for:
+        port: 22
+        timeout: 300
+
+    - name: Get node name
+      ansible.builtin.command: hostname
+      register: node_name
+      changed_when: false
+
+    - name: Wait for kubelet to be ready
+      ansible.builtin.wait_for:
+        port: 10250
+        timeout: 120
+
+    - name: Uncordon node
+      ansible.builtin.command: kubectl uncordon {{ node_name.stdout }}
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      delegate_to: "{{ groups['master'][0] }}"
+      become_user: "{{ kube_user }}"
+      register: uncordon_result
+
+    - name: Verify node status
+      ansible.builtin.command: >
+        kubectl get node {{ node_name.stdout }} -o jsonpath='{.spec.unschedulable}'
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      delegate_to: "{{ groups['master'][0] }}"
+      become_user: "{{ kube_user }}"
+      register: node_status
+      changed_when: false
+
+    - name: Show uncordon result
+      ansible.builtin.debug:
+        msg: |
+          Node {{ node_name.stdout }} status:
+          {% if node_status.stdout == '' %}
+          ✅ Node is schedulable and ready for workloads
+          {% else %}
+          ⚠️ Node may still be unschedulable
+          {% endif %}
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show startup summary
+      ansible.builtin.debug:
+        msg: |
+          =================================================
+          Kubernetes Node Startup Recovery Complete
+          =================================================
+          
+          All specified nodes have been uncordoned.
+          Nodes are now available for pod scheduling.
+          Cluster is ready for normal operations.
+          
+          =================================================
