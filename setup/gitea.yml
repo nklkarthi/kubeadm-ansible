@@ -13,7 +13,6 @@
         home: "{{ gitea_home }}"
         shell: /bin/bash
         system: true
-
     - name: Create gitea directories
       ansible.builtin.file:
         path: "{{ item }}"
@@ -25,16 +24,15 @@
         - "{{ gitea_home }}/gitea"
         - "/var/lib/gitea"
         - "/etc/gitea"
-
     - name: Download Gitea binary
       ansible.builtin.get_url:
         url: >
           https://dl.gitea.io/gitea/{{ gitea_version }}/getea-{{ gitea_version }}-linux-amd64
+
         dest: /usr/local/bin/gitea
         mode: "0755"
         owner: root
         group: root
-
     - name: Create gitea systemd service
       ansible.builtin.copy:
         content: |
@@ -57,7 +55,6 @@
           WantedBy=multi-user.target
         dest: /etc/systemd/system/gitea.service
         mode: "0644"
-
     - name: Create gitea configuration
       ansible.builtin.copy:
         content: |
@@ -93,22 +90,18 @@
         owner: "{{ gitea_user }}"
         group: "{{ gitea_user }}"
         mode: "0640"
-
     - name: Allow Gitea port in firewall
       ansible.builtin.command: "ufw allow {{ gitea_port }}/tcp"
       changed_when: false
-
     - name: Reload UFW
       ansible.builtin.command: ufw reload
       changed_when: false
-
     - name: Enable and start gitea service
       ansible.builtin.systemd:
         name: gitea
         enabled: true
         state: started
         daemon_reload: true
-
     - name: Show Gitea access information
       ansible.builtin.debug:
         msg: |

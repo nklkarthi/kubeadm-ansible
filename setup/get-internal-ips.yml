@@ -12,13 +12,13 @@
           Gitea URL for ArgoCD:
           http://{{ ansible_default_ipv4.address }}:3000
           {% endif %}
-
 - name: ArgoCD Integration Summary
   hosts: localhost
   gather_facts: false
   vars:
     gitea_host: >
       {{ groups['workers'][0] if groups['workers'] is defined else 'N/A' }}
+
   tasks:
     - name: Show ArgoCD integration summary
       ansible.builtin.debug:

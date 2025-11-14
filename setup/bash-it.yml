@@ -26,7 +26,6 @@
         creates: "{{ bash_it_backup_file }}"
       become: true
       become_user: "{{ bash_it_user }}"
-
     - name: Set bash-it theme to powerline
       ansible.builtin.lineinfile:
         path: /home/{{ bash_it_user }}/.bashrc

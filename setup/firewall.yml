@@ -5,23 +5,20 @@
     - name: Enable UFW
       ansible.builtin.command: ufw --force enable
       changed_when: false
-
     - name: Allow SSH (port 22)
       ansible.builtin.command: ufw allow 22/tcp
       changed_when: false
-
     - name: Allow all traffic from cluster nodes
       ansible.builtin.command: >
         ufw allow from {{ hostvars[item].ansible_default_ipv4.address }}
+
       loop: "{{ groups['all'] }}"
       when: hostvars[item].ansible_default_ipv4.address is defined
       changed_when: false
-
     - name: Allow Kubernetes API server (master)
       when: inventory_hostname in groups['master']
       ansible.builtin.command: ufw allow 6443/tcp
       changed_when: false
-
     - name: Allow etcd (master)
       when: inventory_hostname in groups['master']
       ansible.builtin.command: "ufw allow {{ item }}/tcp"
@@ -29,40 +26,32 @@
         - "2379"
         - "2380"
       changed_when: false
-
     - name: Allow kubelet API (all nodes)
       ansible.builtin.command: ufw allow 10250/tcp
       changed_when: false
-
     - name: Allow kube-controller-manager (master)
       when: inventory_hostname in groups['master']
       ansible.builtin.command: ufw allow 10257/tcp
       changed_when: false
-
     - name: Allow kube-scheduler (master)
       when: inventory_hostname in groups['master']
       ansible.builtin.command: ufw allow 10259/tcp
       changed_when: false
-
     - name: Allow kube-proxy (workers)
       when: inventory_hostname in groups['workers']
       ansible.builtin.command: ufw allow 10256/tcp
       changed_when: false
-
     - name: Allow NodePort services TCP (workers)
       when: inventory_hostname in groups['workers']
       ansible.builtin.command: ufw allow 30000:32767/tcp
       changed_when: false
-
     - name: Allow NodePort services UDP (workers)
       when: inventory_hostname in groups['workers']
       ansible.builtin.command: ufw allow 30000:32767/udp
       changed_when: false
-
     - name: Allow pod network traffic
       ansible.builtin.command: ufw allow from 10.244.0.0/16
       changed_when: false
-
     - name: Reload UFW to apply changes
       ansible.builtin.command: ufw reload
       changed_when: false

@@ -1,4 +1,3 @@
----
 - name: Configure passwordless sudo for user
   hosts: all
   become: true
@@ -10,7 +9,6 @@
         path: /etc/sudoers
         line: "{{ sudo_user }} ALL=(ALL) NOPASSWD: ALL"
         validate: "visudo -cf %s"
-
 - name: Configure system timezone
   hosts: all
   become: true

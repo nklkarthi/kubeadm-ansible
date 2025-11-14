@@ -9,34 +9,31 @@
       ansible.builtin.debug:
         msg: |
           Kubernetes Cluster Maintenance Tool
-          
+
           Available actions:
           - shutdown: Drain nodes before 4-hour window
           - startup: Uncordon nodes after restart
           - status: Show current node status
-          
+
           Current action: {{ maintenance_action }}
           Target nodes: {{ target_nodes }}
-
     - name: Execute shutdown preparation
       ansible.builtin.include_tasks: node-shutdown.yml
       when: maintenance_action == 'shutdown'
-
     - name: Execute startup recovery
       ansible.builtin.include_tasks: node-startup.yml
       when: maintenance_action == 'startup'
-
     - name: Show cluster status
       ansible.builtin.command: >
         kubectl get nodes -o wide
       environment:
         KUBECONFIG: /home/cloud_user/.kube/config
       delegate_to: "{{ groups['master'][0] }}"
+      become: true
       become_user: cloud_user
       register: cluster_status
       when: maintenance_action == 'status'
       changed_when: false
-
     - name: Display cluster status
       ansible.builtin.debug:
         var: cluster_status.stdout_lines
