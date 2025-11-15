@@ -1,14 +1,61 @@
-- name: Uncordon Kubernetes nodes after startup
-  hosts: "{{ target_nodes | default('workers') }}"
+---
+- name: Uncordon master node first
+  hosts: master
   become: true
   vars:
     kube_user: "{{ target_user | default('cloud_user') }}"
   tasks:
-    - name: Wait for node to be ready
+    - name: Wait for master node to be ready
       ansible.builtin.wait_for:
         port: 22
         timeout: 300
-    - name: Get node name
+    - name: Get master node name
+      ansible.builtin.command: hostname
+      register: master_name
+      changed_when: false
+    - name: Wait for kubelet to be ready
+      ansible.builtin.wait_for:
+        port: 10250
+        timeout: 120
+    - name: Uncordon master node
+      ansible.builtin.command: kubectl uncordon {{ master_name.stdout }}
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      become: true
+      become_user: "{{ kube_user }}"
+      register: master_uncordon_result
+      changed_when: "'uncordoned' in master_uncordon_result.stdout"
+    - name: Verify master node status
+      ansible.builtin.command: >
+        kubectl get node {{ master_name.stdout }}
+        -o jsonpath='{.spec.unschedulable}'
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      become: true
+      become_user: "{{ kube_user }}"
+      register: master_status
+      changed_when: false
+    - name: Show master uncordon result
+      ansible.builtin.debug:
+        msg: |
+          Master {{ master_name.stdout }} status:
+          {% if master_status.stdout == '' %}
+          ✅ Master is schedulable and ready
+          {% else %}
+          ⚠️ Master may still be unschedulable
+          {% endif %}
+
+- name: Uncordon worker nodes
+  hosts: workers
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Wait for worker node to be ready
+      ansible.builtin.wait_for:
+        port: 22
+        timeout: 300
+    - name: Get worker node name
       ansible.builtin.command: hostname
       register: node_name
       changed_when: false
@@ -16,31 +63,34 @@
       ansible.builtin.wait_for:
         port: 10250
         timeout: 120
-    - name: Uncordon node
+    - name: Uncordon worker node
       ansible.builtin.command: kubectl uncordon {{ node_name.stdout }}
       environment:
         KUBECONFIG: /home/{{ kube_user }}/.kube/config
       delegate_to: "{{ groups['master'][0] }}"
+      become: true
       become_user: "{{ kube_user }}"
       register: uncordon_result
-    - name: Verify node status
+      changed_when: "'uncordoned' in uncordon_result.stdout"
+    - name: Verify worker node status
       ansible.builtin.command: >
-        kubectl get node {{ node_name.stdout }} -o jsonpath='{.spec.unschedulable}'
-
+        kubectl get node {{ node_name.stdout }}
+        -o jsonpath='{.spec.unschedulable}'
       environment:
         KUBECONFIG: /home/{{ kube_user }}/.kube/config
       delegate_to: "{{ groups['master'][0] }}"
+      become: true
       become_user: "{{ kube_user }}"
       register: node_status
       changed_when: false
-    - name: Show uncordon result
+    - name: Show worker uncordon result
       ansible.builtin.debug:
         msg: |
-          Node {{ node_name.stdout }} status:
+          Worker {{ node_name.stdout }} status:
           {% if node_status.stdout == '' %}
-          ✅ Node is schedulable and ready for workloads
+          ✅ Worker is schedulable and ready for workloads
           {% else %}
-          ⚠️ Node may still be unschedulable
+          ⚠️ Worker may still be unschedulable
           {% endif %}
 - name: Summary
   hosts: localhost
@@ -53,8 +103,8 @@
           Kubernetes Node Startup Recovery Complete
           =================================================
 
-          All specified nodes have been uncordoned.
-          Nodes are now available for pod scheduling.
+          ✅ Master uncordoned first
+          ✅ Workers uncordoned after master
           Cluster is ready for normal operations.
 
           =================================================

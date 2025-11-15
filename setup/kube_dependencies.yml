@@ -59,7 +59,10 @@
     - name: Add Docker APT repository
       ansible.builtin.apt_repository:
         repo: >-
-          deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker-apt-keyring.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+          deb [arch={{ 'amd64' if ansible_architecture == 'x86_64'
+          else 'arm64' }} signed-by=/etc/apt/keyrings/docker-apt-keyring.asc]
+          https://download.docker.com/linux/ubuntu
+          {{ ansible_distribution_release }} stable
         state: present
         update_cache: true
     - name: Add Kubernetes apt GPG key
@@ -71,7 +74,8 @@
     - name: Add Kubernetes APT repository
       ansible.builtin.apt_repository:
         repo: >-
-          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc]
+          https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
         state: present
         update_cache: true
     - name: Install containerd

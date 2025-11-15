@@ -67,43 +67,49 @@ Run the following Ansible playbooks in order to provision the servers and set up
     ansible-playbook -i setup/inventory setup/bash-it.yml
     ```
 
-3.  **Firewall:** This playbook configures the firewall on the servers.
+3.  **fzf:** This playbook installs and configures fzf, a command-line fuzzy finder.
+
+    ```bash
+    ansible-playbook -i setup/inventory setup/fzf.yml
+    ```
+
+4.  **Firewall:** This playbook configures the firewall on the servers.
 
     ```bash
     ansible-playbook -i setup/inventory setup/firewall.yml
     ```
 
-4.  **Kube Dependencies:** This playbook installs the dependencies required for Kubernetes.
+5.  **Kube Dependencies:** This playbook installs the dependencies required for Kubernetes.
 
     ```bash
     ansible-playbook -i setup/inventory setup/kube_dependencies.yml
     ```
 
-5.  **Kube Master:** This playbook initializes the Kubernetes master node.
+6.  **Kube Master:** This playbook initializes the Kubernetes master node.
 
     ```bash
     ansible-playbook -i setup/inventory setup/kube_master.yml
     ```
 
-6.  **Kube Workers:** This playbook joins the worker nodes to the cluster.
+7.  **Kube Workers:** This playbook joins the worker nodes to the cluster.
 
     ```bash
     ansible-playbook -i setup/inventory setup/kube_workers.yml
     ```
 
-7.  **Gitea (Optional):** This playbook installs Gitea on worker node 737f3fac482c.mylabserver.com.
+8.  **Gitea (Optional):** This playbook installs Gitea on worker node 737f3fac482c.mylabserver.com.
 
     ```bash
     ansible-playbook -i setup/inventory setup/gitea.yml
     ```
 
-8.  **Get Internal IPs (Utility):** Get internal IP addresses for ArgoCD integration.
+9.  **Get Internal IPs (Utility):** Get internal IP addresses for ArgoCD integration.
 
     ```bash
     ansible-playbook -i setup/inventory setup/get-internal-ips.yml
     ```
 
-9.  **Gitea Webhook Fix (Optional):** Configure webhooks for existing Gitea installations.
+10. **Gitea Webhook Fix (Optional):** Configure webhooks for existing Gitea installations.
 
     ```bash
     ansible-playbook -i setup/inventory setup/gitea-webhook-fix.yml
@@ -113,7 +119,7 @@ Run the following Ansible playbooks in order to provision the servers and set up
 
 For environments with 4-hour operational windows:
 
-10. **Before Shutdown:** Drain nodes gracefully before the 4-hour limit.
+11. **Before Shutdown:** Drain nodes gracefully before the 4-hour limit.
 
     ```bash
     # Drain all worker nodes
@@ -123,7 +129,7 @@ For environments with 4-hour operational windows:
     ansible-playbook -i setup/inventory setup/node-shutdown.yml -e "target_nodes=specific-node"
     ```
 
-11. **After Startup:** Uncordon nodes to make them schedulable again.
+12. **After Startup:** Uncordon nodes to make them schedulable again.
 
     ```bash
     # Uncordon all worker nodes
@@ -133,7 +139,7 @@ For environments with 4-hour operational windows:
     ansible-playbook -i setup/inventory setup/node-startup.yml -e "target_nodes=specific-node"
     ```
 
-12. **Unified Maintenance:** Single playbook for all maintenance operations.
+13. **Unified Maintenance:** Single playbook for all maintenance operations.
 
     ```bash
     # Check cluster status

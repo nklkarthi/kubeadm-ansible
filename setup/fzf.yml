@@ -1,0 +1,27 @@
+- name: Install fzf on all hosts
+  hosts: all
+  vars:
+    fzf_repo: https://github.com/junegunn/fzf.git
+    fzf_user: "{{ target_user | default('cloud_user') }}"
+    fzf_dir: /home/{{ fzf_user }}/.fzf
+  tasks:
+    - name: Ensure git is installed
+      ansible.builtin.package:
+        name: git
+        state: present
+      become: true
+    - name: Clone fzf repository
+      ansible.builtin.git:
+        repo: "{{ fzf_repo }}"
+        dest: "{{ fzf_dir }}"
+        version: master
+        update: true
+      become: true
+      become_user: "{{ fzf_user }}"
+    - name: Install fzf
+      ansible.builtin.command: "{{ fzf_dir }}/install --all"
+      args:
+        chdir: "{{ fzf_dir }}"
+        creates: /home/{{ fzf_user }}/.fzf.bash
+      become: true
+      become_user: "{{ fzf_user }}"

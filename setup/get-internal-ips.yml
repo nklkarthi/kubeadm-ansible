@@ -33,7 +33,8 @@
           {{ hostvars[gitea_host].ansible_default_ipv4.address }}
 
           Use this URL in ArgoCD:
-          http://{{ hostvars[gitea_host].ansible_default_ipv4.address }}:3000/username/repo.git
+          http://{{ hostvars[gitea_host].ansible_default_ipv4.address }}:3000/
+          username/repo.git
           {% else %}
           No worker nodes found in inventory
           {% endif %}

@@ -1,0 +1,11 @@
+---
+kinds:
+  - playbook: "setup/*.yml"
+
+skip_list:
+  - schema[tasks]
+  - parser-error
+
+exclude_paths:
+  - .git/
+  - .github/
