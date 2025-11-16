@@ -1,0 +1,112 @@
+---
+- name: Reset worker nodes first
+  hosts: workers
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Check if worker node is joined
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get nodes | grep -q {{ ansible_hostname }}
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      delegate_to: "{{ groups['master'][0] }}"
+      become: true
+      become_user: "{{ kube_user }}"
+      register: worker_check
+      failed_when: false
+      changed_when: false
+    - name: Reset worker node
+      ansible.builtin.command: kubeadm reset --force
+      when: worker_check.rc == 0
+      changed_when: worker_check.rc == 0
+    - name: Clean up worker files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes/kubelet.conf
+        - /etc/kubernetes/pki/ca.crt
+        - /etc/kubernetes/bootstrap-kubelet.conf
+        - /etc/kubernetes/pki
+      when: worker_check.rc == 0
+    - name: Remove worker from cluster
+      ansible.builtin.command: kubectl delete node {{ ansible_hostname }}
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      delegate_to: "{{ groups['master'][0] }}"
+      become: true
+      become_user: "{{ kube_user }}"
+      when: worker_check.rc == 0
+      failed_when: false
+      changed_when: worker_check.rc == 0
+
+- name: Reset master node
+  hosts: master
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Check if master is initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: master_check
+    - name: Reset master node
+      ansible.builtin.command: kubeadm reset --force
+      when: master_check.stat.exists
+      changed_when: master_check.stat.exists
+    - name: Clean up master files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes/admin.conf
+        - /etc/kubernetes/kubelet.conf
+        - /etc/kubernetes/controller-manager.conf
+        - /etc/kubernetes/scheduler.conf
+        - /etc/kubernetes/manifests
+        - /etc/kubernetes/pki
+        - /var/lib/etcd
+        - /home/{{ kube_user }}/.kube
+      when: master_check.stat.exists
+    - name: Ensure kubernetes directory exists
+      ansible.builtin.file:
+        path: /etc/kubernetes
+        state: directory
+        mode: '0755'
+
+- name: Clean up container images
+  hosts: all
+  become: true
+  tasks:
+    - name: Stop containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+    - name: Remove container images
+      ansible.builtin.shell: |
+        rm -rf /var/lib/containerd/*
+      changed_when: true
+    - name: Start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show reset summary
+      ansible.builtin.debug:
+        msg: |-
+          =================================================
+          Kubernetes Cluster Reset Complete
+          =================================================
+
+          ✅ Workers reset first
+          ✅ Master reset after workers
+          ✅ Container images cleaned up
+          Cluster is ready for fresh initialization.
+
+          =================================================

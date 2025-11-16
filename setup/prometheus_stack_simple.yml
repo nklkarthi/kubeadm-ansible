@@ -1,0 +1,54 @@
+---
+- name: Install kube-prometheus-stack using ArgoCD CLI (Simple)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    app_name: "kube-prometheus-stack"
+    app_namespace: "monitoring"
+  tasks:
+    - name: Create monitoring namespace
+      ansible.builtin.shell: |
+        kubectl create namespace {{ app_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      changed_when: false
+
+    - name: Create/Update ArgoCD application for kube-prometheus-stack
+      ansible.builtin.shell: |
+        argocd app create {{ app_name }} \
+          --repo https://prometheus-community.github.io/helm-charts \
+          --helm-chart kube-prometheus-stack \
+          --revision "79.5.0" \
+          --dest-server https://kubernetes.default.svc \
+          --dest-namespace {{ app_namespace }} \
+          --helm-set prometheusOperator.admissionWebhooks.enabled=false \
+          --helm-set prometheusOperator.tls.enabled=false \
+          --helm-set alertmanager.service.type=NodePort \
+          --helm-set alertmanager.service.nodePort=30081 \
+          --helm-set grafana.service.type=NodePort \
+          --helm-set grafana.service.nodePort=30086 \
+          --helm-set prometheus.service.type=NodePort \
+          --helm-set prometheus.service.nodePort=30084 \
+          --upsert
+      changed_when: true
+
+    - name: Configure sync policy
+      ansible.builtin.shell: |
+        argocd app patch {{ app_name }} --type merge \
+          --patch '{"spec":{"syncPolicy":{"syncOptions":["ServerSideApply=true","CreateNamespace=true"]}}}'
+      changed_when: false
+
+    - name: Sync the application
+      ansible.builtin.shell: |
+        argocd app sync {{ app_name }} --timeout 600
+      changed_when: false
+
+    - name: Show access information
+      ansible.builtin.debug:
+        msg: |
+          Prometheus Stack Installation Started!
+
+          Access URLs (once deployed):
+          - Prometheus: http://737f3fac481c.mylabserver.com:30084
+          - Grafana: http://737f3fac481c.mylabserver.com:30086
+          - Alertmanager: http://737f3fac481c.mylabserver.com:30081
+
+          Check status with: argocd app get {{ app_name }}

@@ -10,7 +10,9 @@
       ansible.builtin.set_fact:
         join_command: "{{ join_command_raw.stdout_lines[0] }}"
     - name: Check API server is listening
-      ansible.builtin.command: netstat -tlnp | grep :6443
+      ansible.builtin.shell: |
+        set -o pipefail
+        netstat -tlnp | grep :6443
       register: api_server_status
       failed_when: false
       changed_when: false
@@ -60,7 +62,9 @@
         path: /var/run/containerd/containerd.sock
         timeout: 30
     - name: Check if node is already joined
-      ansible.builtin.command: kubectl get nodes {{ ansible_hostname }}
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get nodes | grep -q {{ ansible_hostname }}
       environment:
         KUBECONFIG: /home/{{ kube_user }}/.kube/config
       delegate_to: "{{ groups['master'][0] }}"
@@ -78,7 +82,11 @@
     - name: Show join result
       ansible.builtin.debug:
         msg: |
+          {% if node_check.rc == 0 %}
+          Node {{ ansible_hostname }} is already joined to the cluster
+          {% else %}
           Join command result: {{ join_result.stdout }}
           {% if join_result.rc != 0 %}
           Error: {{ join_result.stderr }}
+          {% endif %}
           {% endif %}

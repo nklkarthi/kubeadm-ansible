@@ -31,7 +31,6 @@
     - name: Generate new containerd config
       ansible.builtin.shell: >
         containerd config default > /etc/containerd/config.toml
-
       changed_when: false
     - name: Enable CRI plugin in containerd
       ansible.builtin.replace:
@@ -114,3 +113,22 @@
       ansible.builtin.debug:
         var: calico_result.stdout_lines
       when: admin_conf_stat.stat.exists and calico_result is defined
+    - name: Show manual kubeconfig copy instructions
+      ansible.builtin.debug:
+        msg: |
+          =================================================
+          MANUAL STEP REQUIRED: Copy Kubeconfig to Control Host
+          =================================================
+
+          To access the cluster from your Mac control host, manually run:
+
+          scp {{ kube_user }}@{{ ansible_default_ipv4.address }}:\
+            /home/{{ kube_user }}/.kube/config \
+            ~/.kube/config-{{ inventory_hostname }}
+
+          Then merge it into your existing ~/.kube/config or set:
+          export KUBECONFIG=~/.kube/config-{{ inventory_hostname }}
+
+          Cluster endpoint: https://{{ ansible_default_ipv4.address }}:6443
+
+          =================================================
