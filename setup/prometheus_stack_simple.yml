@@ -8,7 +8,9 @@
   tasks:
     - name: Create monitoring namespace
       ansible.builtin.shell: |
-        kubectl create namespace {{ app_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+        set -o pipefail
+        kubectl create namespace {{ app_namespace }} --dry-run=client \
+          -o yaml | kubectl apply -f -
       changed_when: false
 
     - name: Create/Update ArgoCD application for kube-prometheus-stack
