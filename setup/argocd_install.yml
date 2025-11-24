@@ -11,34 +11,6 @@
     nodeport: "{{ argocd_nodeport | default('30080') }}"
   tasks:
 
-    - name: Create namespace if not exists
-      ansible.builtin.shell: |
-        set -o pipefail
-        kubectl create namespace {{ argocd_ns }} --dry-run=client -o yaml \
-        | kubectl apply -f -
-      environment:
-        KUBECONFIG: /home/{{ kube_user }}/.kube/config
-      become: true
-      become_user: "{{ kube_user }}"
-      changed_when: false
-    - name: Check if Helm release exists
-      ansible.builtin.shell: |
-        set -o pipefail
-        helm list -n {{ argocd_ns }} | grep -q {{ release_name }}
-      delegate_to: localhost
-      become: false
-      register: release_check
-      failed_when: false
-      changed_when: false
-    - name: Clean up existing ArgoCD resources if needed
-      ansible.builtin.shell: |
-        kubectl delete all --all -n {{ argocd_ns }} --ignore-not-found=true
-      environment:
-        KUBECONFIG: /home/{{ kube_user }}/.kube/config
-      become: true
-      become_user: "{{ kube_user }}"
-      when: release_check.rc != 0
-      changed_when: false
     - name: Copy kubeconfig to temporary file
       ansible.builtin.fetch:
         src: /home/{{ kube_user }}/.kube/config
@@ -53,17 +25,61 @@
         replace: 'https://{{ inventory_hostname }}:6443'
       delegate_to: localhost
       become: false
-    - name: Install ArgoCD with NodePort
+    - name: Create namespace if not exists
       ansible.builtin.shell: |
-        helm install {{ release_name }} {{ chart_name }} \
-          --namespace {{ argocd_ns }} \
-          --set server.service.type=NodePort \
-          --set server.service.nodePortHttp={{ nodeport }} \
-          --set server.insecure=true \
-          --set configs.params."server\.insecure"=true \
-          --create-namespace \
-          --kubeconfig /tmp/kubeconfig-argocd \
-          {% if chart_version %}--version {{ chart_version }}{% endif %}
+        set -o pipefail
+        kubectl create namespace {{ argocd_ns }} --dry-run=client -o yaml \
+        | kubectl apply -f - --kubeconfig /tmp/kubeconfig-argocd
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Check if Helm release exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        helm list -n {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd | grep -q {{ release_name }}
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: release_check
+      failed_when: false
+      changed_when: false
+    - name: Clean up existing ArgoCD resources completely
+      ansible.builtin.shell: |
+        # Remove Helm release first
+        helm uninstall {{ release_name }} -n {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd || true
+        # Delete all ArgoCD CRDs
+        kubectl delete crd applications.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
+        kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
+        kubectl delete crd appprojects.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
+        # Delete namespace and wait
+        kubectl delete namespace {{ argocd_ns }} --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
+        kubectl wait --for=delete namespace/{{ argocd_ns }} --timeout=180s --kubeconfig /tmp/kubeconfig-argocd || true
+        # Force remove finalizers if stuck
+        kubectl patch namespace {{ argocd_ns }} -p '{"metadata":{"finalizers":[]}}' --type=merge --kubeconfig /tmp/kubeconfig-argocd || true
+      delegate_to: localhost
+      become: false
+      when: release_check.rc != 0
+      changed_when: false
+    - name: Add ArgoCD Helm repository
+      ansible.builtin.shell: |
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Install ArgoCD using kubectl apply
+      ansible.builtin.shell: |
+        # Create namespace
+        kubectl create namespace {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd || true
+        # Install ArgoCD using kubectl
+        kubectl apply -n {{ argocd_ns }} -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --kubeconfig /tmp/kubeconfig-argocd
+        # Patch server service to NodePort
+        kubectl patch svc argocd-server -n {{ argocd_ns }} -p '{"spec":{"type":"NodePort","ports":[{"name":"server","port":80,"protocol":"TCP","targetPort":8080,"nodePort":{{ nodeport }}}]}}' --kubeconfig /tmp/kubeconfig-argocd
+        # Configure insecure mode
+        kubectl patch configmap argocd-cmd-params-cm -n {{ argocd_ns }} -p '{"data":{"server.insecure":"true"}}' --kubeconfig /tmp/kubeconfig-argocd
       delegate_to: localhost
       become: false
       when: release_check.rc != 0
@@ -82,11 +98,9 @@
         var: helm_status.stdout_lines
     - name: Get NodePort service details
       ansible.builtin.shell: |
-        kubectl get svc -n {{ argocd_ns }} -o wide
-      environment:
-        KUBECONFIG: /home/{{ kube_user }}/.kube/config
-      become: true
-      become_user: "{{ kube_user }}"
+        kubectl get svc -n {{ argocd_ns }} -o wide --kubeconfig /tmp/kubeconfig-argocd
+      delegate_to: localhost
+      become: false
       register: service_details
       changed_when: false
     - name: Get ArgoCD admin password
@@ -94,11 +108,11 @@
         set -o pipefail
         kubectl -n {{ argocd_ns }} get secret \
           argocd-initial-admin-secret \
-          -o jsonpath="{.data.password}" | base64 -d
-      environment:
-        KUBECONFIG: /home/{{ kube_user }}/.kube/config
-      become: true
-      become_user: "{{ kube_user }}"
+          -o jsonpath="{.data.password}" --kubeconfig /tmp/kubeconfig-argocd | base64 -d
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
       register: argocd_password
       changed_when: false
       failed_when: false

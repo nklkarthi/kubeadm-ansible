@@ -25,12 +25,9 @@
       when: maintenance_action == 'startup'
     - name: Show cluster status
       ansible.builtin.command: >
-        kubectl get nodes -o wide
-      environment:
-        KUBECONFIG: /home/cloud_user/.kube/config
-      delegate_to: "{{ groups['master'][0] }}"
-      become: true
-      become_user: cloud_user
+        kubectl get nodes -o wide --kubeconfig ~/.kube/config
+      delegate_to: localhost
+      become: false
       register: cluster_status
       when: maintenance_action == 'status'
       changed_when: false
