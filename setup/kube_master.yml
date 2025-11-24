@@ -129,6 +129,7 @@
           Then merge it into your existing ~/.kube/config or set:
           export KUBECONFIG=~/.kube/config-{{ inventory_hostname }}
 
-          Cluster endpoint: https://{{ ansible_facts['default_ipv4']['address'] }}:6443
+          Cluster endpoint: \
+            https://{{ ansible_facts['default_ipv4']['address'] }}:6443
 
           =================================================

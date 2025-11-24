@@ -1,9 +1,9 @@
+---
 - name: Kubernetes Cluster Maintenance Automation
   hosts: localhost
   gather_facts: false
   vars:
     maintenance_action: "{{ action | default('status') }}"
-    target_nodes: "{{ nodes | default('workers') }}"
   tasks:
     - name: Show maintenance options
       ansible.builtin.debug:
@@ -16,13 +16,6 @@
           - status: Show current node status
 
           Current action: {{ maintenance_action }}
-          Target nodes: {{ target_nodes }}
-    - name: Execute shutdown preparation
-      ansible.builtin.include_tasks: node-shutdown.yml
-      when: maintenance_action == 'shutdown'
-    - name: Execute startup recovery
-      ansible.builtin.include_tasks: node-startup.yml
-      when: maintenance_action == 'startup'
     - name: Show cluster status
       ansible.builtin.command: >
         kubectl get nodes -o wide --kubeconfig ~/.kube/config
@@ -35,3 +28,11 @@
       ansible.builtin.debug:
         var: cluster_status.stdout_lines
       when: maintenance_action == 'status'
+
+- name: Execute shutdown preparation
+  import_playbook: node-shutdown.yml
+  when: action | default('status') == 'shutdown'
+
+- name: Execute startup recovery
+  import_playbook: node-startup.yml
+  when: action | default('status') == 'startup'

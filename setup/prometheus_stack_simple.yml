@@ -35,7 +35,7 @@
     - name: Configure sync policy
       ansible.builtin.shell: |
         argocd app patch {{ app_name }} --type merge \
-          --patch '{"spec":{"syncPolicy":{"syncOptions":["ServerSideApply=true","CreateNamespace=true"]}}}'
+          --patch '{"spec":{"syncPolicy":{"syncOptions":["ServerSideApply=true","CreateNamespace=true"]}}}}'
       changed_when: false
 
     - name: Sync the application

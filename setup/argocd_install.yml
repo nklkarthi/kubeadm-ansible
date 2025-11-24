@@ -4,9 +4,6 @@
   become: true
   vars:
     kube_user: "{{ target_user | default('cloud_user') }}"
-    chart_name: "{{ argocd_chart_name | default('argo/argo-cd') }}"
-    chart_version: "{{ argocd_chart_version | default('') }}"
-    release_name: "{{ argocd_release_name | default('argocd') }}"
     argocd_ns: "{{ argocd_namespace | default('argocd') }}"
     nodeport: "{{ argocd_nodeport | default('30080') }}"
   tasks:
@@ -35,70 +32,73 @@
       delegate_to: localhost
       become: false
       changed_when: false
-    - name: Check if Helm release exists
+    - name: Check if ArgoCD is already installed
       ansible.builtin.shell: |
-        set -o pipefail
-        helm list -n {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd | grep -q {{ release_name }}
-      args:
-        executable: /bin/bash
+        kubectl get deployment argocd-server -n {{ argocd_ns }} \
+          --kubeconfig /tmp/kubeconfig-argocd
       delegate_to: localhost
       become: false
-      register: release_check
+      register: argocd_check
       failed_when: false
       changed_when: false
-    - name: Clean up existing ArgoCD resources completely
+    - name: Clean up existing ArgoCD resources if needed
       ansible.builtin.shell: |
-        # Remove Helm release first
-        helm uninstall {{ release_name }} -n {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd || true
         # Delete all ArgoCD CRDs
-        kubectl delete crd applications.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
-        kubectl delete crd applicationsets.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
-        kubectl delete crd appprojects.argoproj.io --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
+        kubectl delete crd applications.argoproj.io --ignore-not-found=true \
+          --kubeconfig /tmp/kubeconfig-argocd
+        kubectl delete crd applicationsets.argoproj.io \
+          --ignore-not-found=true \
+          --kubeconfig /tmp/kubeconfig-argocd
+        kubectl delete crd appprojects.argoproj.io \
+          --ignore-not-found=true \
+          --kubeconfig /tmp/kubeconfig-argocd
         # Delete namespace and wait
-        kubectl delete namespace {{ argocd_ns }} --ignore-not-found=true --kubeconfig /tmp/kubeconfig-argocd
-        kubectl wait --for=delete namespace/{{ argocd_ns }} --timeout=180s --kubeconfig /tmp/kubeconfig-argocd || true
-        # Force remove finalizers if stuck
-        kubectl patch namespace {{ argocd_ns }} -p '{"metadata":{"finalizers":[]}}' --type=merge --kubeconfig /tmp/kubeconfig-argocd || true
+        kubectl delete namespace {{ argocd_ns }} \
+          --ignore-not-found=true \
+          --kubeconfig /tmp/kubeconfig-argocd
+        kubectl wait --for=delete namespace/{{ argocd_ns }} \
+          --timeout=180s \
+          --kubeconfig /tmp/kubeconfig-argocd || true
       delegate_to: localhost
       become: false
-      when: release_check.rc != 0
+      when: argocd_check.rc != 0
       changed_when: false
-    - name: Add ArgoCD Helm repository
-      ansible.builtin.shell: |
-        helm repo add argo https://argoproj.github.io/argo-helm
-        helm repo update
-      delegate_to: localhost
-      become: false
-      changed_when: false
+
     - name: Install ArgoCD using kubectl apply
       ansible.builtin.shell: |
         # Create namespace
-        kubectl create namespace {{ argocd_ns }} --kubeconfig /tmp/kubeconfig-argocd || true
+        kubectl create namespace {{ argocd_ns }} \
+          --kubeconfig /tmp/kubeconfig-argocd || true
         # Install ArgoCD using kubectl
-        kubectl apply -n {{ argocd_ns }} -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --kubeconfig /tmp/kubeconfig-argocd
+        kubectl apply -n {{ argocd_ns }} \
+          -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml \
+          --kubeconfig /tmp/kubeconfig-argocd # noqa: yaml[line-length]
         # Patch server service to NodePort
-        kubectl patch svc argocd-server -n {{ argocd_ns }} -p '{"spec":{"type":"NodePort","ports":[{"name":"server","port":80,"protocol":"TCP","targetPort":8080,"nodePort":{{ nodeport }}}]}}' --kubeconfig /tmp/kubeconfig-argocd
+        kubectl patch svc argocd-server -n {{ argocd_ns }} \
+          -p '{"spec":{"type":"NodePort","ports":[{"name":"server","port":80,"protocol":"TCP","targetPort":8080,"nodePort":{{ nodeport }}}]}}' \
+          --kubeconfig /tmp/kubeconfig-argocd # noqa: yaml[line-length]
         # Configure insecure mode
-        kubectl patch configmap argocd-cmd-params-cm -n {{ argocd_ns }} -p '{"data":{"server.insecure":"true"}}' --kubeconfig /tmp/kubeconfig-argocd
+        kubectl patch configmap argocd-cmd-params-cm \
+          -n {{ argocd_ns }} \
+          -p '{"data":{"server.insecure":"true"}}' \
+          --kubeconfig /tmp/kubeconfig-argocd
       delegate_to: localhost
       become: false
-      when: release_check.rc != 0
-      changed_when: release_check.rc != 0
-    - name: Show Helm release status
+      when: argocd_check.rc != 0
+      changed_when: argocd_check.rc != 0
+    - name: Wait for ArgoCD to be ready
       ansible.builtin.shell: |
-        helm status {{ release_name }} -n {{ argocd_ns }} \
-        --kubeconfig /tmp/kubeconfig-argocd
+        kubectl wait --for=condition=available deployment/argocd-server \
+          -n {{ argocd_ns }} --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-argocd
       delegate_to: localhost
       become: false
-      register: helm_status
       changed_when: false
       failed_when: false
-    - name: Display Helm status
-      ansible.builtin.debug:
-        var: helm_status.stdout_lines
     - name: Get NodePort service details
       ansible.builtin.shell: |
-        kubectl get svc -n {{ argocd_ns }} -o wide --kubeconfig /tmp/kubeconfig-argocd
+        kubectl get svc -n {{ argocd_ns }} -o wide \
+          --kubeconfig /tmp/kubeconfig-argocd
       delegate_to: localhost
       become: false
       register: service_details
@@ -106,9 +106,9 @@
     - name: Get ArgoCD admin password
       ansible.builtin.shell: |
         set -o pipefail
-        kubectl -n {{ argocd_ns }} get secret \
-          argocd-initial-admin-secret \
-          -o jsonpath="{.data.password}" --kubeconfig /tmp/kubeconfig-argocd | base64 -d
+        kubectl -n {{ argocd_ns }} get secret argocd-initial-admin-secret \
+          -o jsonpath="{.data.password}" --kubeconfig /tmp/kubeconfig-argocd \
+          | base64 -d
       args:
         executable: /bin/bash
       delegate_to: localhost
@@ -134,8 +134,7 @@
           Note: ArgoCD is configured in insecure mode (HTTP) for
           Gitea webhook compatibility.
           Gitea webhook URL:
-            http://{{ ansible_facts['default_ipv4']['address'] }}:{{ nodeport }}\
-            /api/webhook
+            http://{{ ansible_facts['default_ipv4']['address'] }}:{{ nodeport }}/api/webhook
 
     - name: Clean up temporary kubeconfig
       ansible.builtin.file:

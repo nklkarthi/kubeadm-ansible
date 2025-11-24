@@ -1,11 +1,6 @@
 ---
-kinds:
-  - playbook: "setup/*.yml"
-
 skip_list:
-  - schema[tasks]
-  - parser-error
+  - yaml[line-length]
 
-exclude_paths:
-  - .git/
-  - .github/
+# Allow longer lines for URLs, JSON paths, and complex commands
+warn_list: []
