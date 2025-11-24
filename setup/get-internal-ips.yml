@@ -6,11 +6,11 @@
       ansible.builtin.debug:
         msg: |
           Host: {{ inventory_hostname }}
-          Internal IP: {{ ansible_default_ipv4.address }}
+          Internal IP: {{ ansible_facts['default_ipv4']['address'] }}
 
           {% if inventory_hostname in groups['workers'] %}
           Gitea URL for ArgoCD:
-          http://{{ ansible_default_ipv4.address }}:3000
+          http://{{ ansible_facts['default_ipv4']['address'] }}:3000
           {% endif %}
 - name: ArgoCD Integration Summary
   hosts: localhost
@@ -30,10 +30,10 @@
           Gitea Host: {{ gitea_host }}
           {% if gitea_host != 'N/A' %}
           Gitea Internal IP:
-          {{ hostvars[gitea_host].ansible_default_ipv4.address }}
+          {{ hostvars[gitea_host].ansible_facts['default_ipv4']['address'] }}
 
           Use this URL in ArgoCD:
-          http://{{ hostvars[gitea_host].ansible_default_ipv4.address }}:3000/
+          http://{{ hostvars[gitea_host].ansible_facts['default_ipv4']['address'] }}:3000/
           username/repo.git
           {% else %}
           No worker nodes found in inventory

@@ -16,7 +16,7 @@
         block: |
           kind: ClusterConfiguration
           apiVersion: kubeadm.k8s.io/v1beta3
-          controlPlaneEndpoint: "{{ ansible_default_ipv4.address }}:6443"
+          controlPlaneEndpoint: "{{ ansible_facts['default_ipv4']['address'] }}:6443"
           networking:
             podSubnet: "10.244.0.0/16"
           ---
@@ -122,13 +122,13 @@
 
           To access the cluster from your Mac control host, manually run:
 
-          scp {{ kube_user }}@{{ ansible_default_ipv4.address }}:\
+          scp {{ kube_user }}@{{ ansible_facts['default_ipv4']['address'] }}:\
             /home/{{ kube_user }}/.kube/config \
             ~/.kube/config-{{ inventory_hostname }}
 
           Then merge it into your existing ~/.kube/config or set:
           export KUBECONFIG=~/.kube/config-{{ inventory_hostname }}
 
-          Cluster endpoint: https://{{ ansible_default_ipv4.address }}:6443
+          Cluster endpoint: https://{{ ansible_facts['default_ipv4']['address'] }}:6443
 
           =================================================

@@ -10,10 +10,10 @@
       changed_when: false
     - name: Allow all traffic from cluster nodes
       ansible.builtin.command: >
-        ufw allow from {{ hostvars[item].ansible_default_ipv4.address }}
+        ufw allow from {{ hostvars[item].ansible_facts['default_ipv4']['address'] }}
 
       loop: "{{ groups['all'] }}"
-      when: hostvars[item].ansible_default_ipv4.address is defined
+      when: hostvars[item].ansible_facts['default_ipv4']['address'] is defined
       changed_when: false
     - name: Allow Kubernetes API server (master)
       when: inventory_hostname in groups['master']

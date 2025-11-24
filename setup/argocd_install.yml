@@ -109,7 +109,7 @@
           {{ service_details.stdout }}
 
           ArgoCD Access:
-          URL: http://{{ ansible_default_ipv4.address }}:{{ nodeport }}
+          URL: http://{{ ansible_facts['default_ipv4']['address'] }}:{{ nodeport }}
           Username: admin
           {% if argocd_password.stdout -%}
           Password: {{ argocd_password.stdout }}
@@ -120,7 +120,7 @@
           Note: ArgoCD is configured in insecure mode (HTTP) for
           Gitea webhook compatibility.
           Gitea webhook URL:
-            http://{{ ansible_default_ipv4.address }}:{{ nodeport }}\
+            http://{{ ansible_facts['default_ipv4']['address'] }}:{{ nodeport }}\
             /api/webhook
 
     - name: Clean up temporary kubeconfig

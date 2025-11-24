@@ -29,7 +29,7 @@
       ansible.builtin.debug:
         msg: >
           Master host:
-          {{ hostvars[groups['master'][0]].ansible_host |
+          {{ hostvars[groups['master'][0]].ansible_facts['all_ipv4_addresses'][0] |
           default(groups['master'][0]) }}
 
     - name: Remove existing containerd config
@@ -64,7 +64,7 @@
     - name: Check if node is already joined
       ansible.builtin.shell: |
         set -o pipefail
-        kubectl get nodes | grep -q {{ ansible_hostname }}
+        kubectl get nodes | grep -q {{ ansible_facts['hostname'] }}
       environment:
         KUBECONFIG: /home/{{ kube_user }}/.kube/config
       delegate_to: "{{ groups['master'][0] }}"
@@ -83,7 +83,7 @@
       ansible.builtin.debug:
         msg: |
           {% if node_check.rc == 0 %}
-          Node {{ ansible_hostname }} is already joined to the cluster
+          Node {{ ansible_facts['hostname'] }} is already joined to the cluster
           {% else %}
           Join command result: {{ join_result.stdout }}
           {% if join_result.rc != 0 %}
