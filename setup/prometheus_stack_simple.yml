@@ -33,10 +33,13 @@
       changed_when: true
 
     - name: Configure sync policy
-      ansible.builtin.shell: |
-        argocd app patch {{ app_name }} --type merge \
-          --patch '{"spec":{"syncPolicy":{"syncOptions":["ServerSideApply=true","CreateNamespace=true"]}}}}'
+      ansible.builtin.shell: argocd app patch {{ app_name }} --type merge --patch '{"spec":{"syncPolicy":{"syncOptions":["ServerSideApply=true","CreateNamespace=true"]}}}'
       changed_when: false
+
+    - name: Wait for CRDs to be ready
+      ansible.builtin.pause:
+        seconds: 30
+      when: true
 
     - name: Sync the application
       ansible.builtin.shell: |

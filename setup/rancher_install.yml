@@ -1,0 +1,156 @@
+---
+- name: Install Rancher using ArgoCD CLI
+  hosts: localhost
+  gather_facts: false
+  vars:
+    certmanager_namespace: "cert-manager"
+    certmanager_version: "v1.17.2"
+    rancher_namespace: "cattle-system"
+    rancher_version: "2.13.1"
+    rancher_hostname: "{{ rancher_host | default(groups['master'][0]) }}"
+    rancher_nodeport: "{{ rancher_port | default('30082') }}"
+    rancher_bootstrap_password: "{{ bootstrap_password | default('admin') }}"
+  tasks:
+    # ========== CERT-MANAGER INSTALLATION ==========
+    - name: Create cert-manager namespace
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl create namespace {{ certmanager_namespace }} --dry-run=client \
+          -o yaml | kubectl apply -f -
+      changed_when: false
+
+    - name: Create/Update ArgoCD application for cert-manager
+      ansible.builtin.shell: |
+        argocd app create cert-manager \
+          --repo https://charts.jetstack.io \
+          --helm-chart cert-manager \
+          --revision "{{ certmanager_version }}" \
+          --dest-server https://kubernetes.default.svc \
+          --dest-namespace {{ certmanager_namespace }} \
+          --project default \
+          --helm-set crds.enabled=true \
+          --sync-option ServerSideApply=true \
+          --sync-option CreateNamespace=true \
+          --upsert
+      changed_when: true
+
+    - name: Sync cert-manager application
+      ansible.builtin.shell: |
+        argocd app sync cert-manager --timeout 300
+      changed_when: false
+
+    - name: Wait for cert-manager to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Available deployment/cert-manager \
+          -n {{ certmanager_namespace }} --timeout=120s
+        kubectl wait --for=condition=Available deployment/cert-manager-webhook \
+          -n {{ certmanager_namespace }} --timeout=120s
+      changed_when: false
+
+    # ========== RANCHER INSTALLATION ==========
+    - name: Cleanup orphaned Rancher helm hook resources
+      ansible.builtin.shell: |
+        kubectl delete clusterrole rancher-post-delete --ignore-not-found
+        kubectl delete clusterrolebinding rancher-post-delete --ignore-not-found
+        kubectl delete job rancher-post-delete -n {{ rancher_namespace }} --ignore-not-found
+        kubectl delete sa rancher-post-delete -n {{ rancher_namespace }} --ignore-not-found
+        kubectl delete cm rancher-post-delete -n {{ rancher_namespace }} --ignore-not-found
+        kubectl delete clusterrole rancher-pre-upgrade --ignore-not-found
+        kubectl delete clusterrolebinding rancher-pre-upgrade --ignore-not-found
+        kubectl delete job rancher-pre-upgrade -n {{ rancher_namespace }} --ignore-not-found
+        kubectl delete sa rancher-pre-upgrade -n {{ rancher_namespace }} --ignore-not-found
+        kubectl delete cm rancher-pre-upgrade -n {{ rancher_namespace }} --ignore-not-found
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for cattle-system namespace to be fully terminated
+      ansible.builtin.shell: |
+        while kubectl get namespace {{ rancher_namespace }} 2>/dev/null; do
+          echo "Waiting for namespace to terminate..."
+          sleep 5
+        done
+        echo "Namespace terminated or does not exist"
+      changed_when: false
+
+    - name: Create cattle-system namespace
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl create namespace {{ rancher_namespace }} --dry-run=client \
+          -o yaml | kubectl apply -f -
+      changed_when: false
+
+    - name: Create/Update ArgoCD application for Rancher
+      ansible.builtin.shell: |
+        argocd app create rancher \
+          --repo https://releases.rancher.com/server-charts/latest \
+          --helm-chart rancher \
+          --revision "{{ rancher_version }}" \
+          --dest-server https://kubernetes.default.svc \
+          --dest-namespace {{ rancher_namespace }} \
+          --project default \
+          --helm-set hostname={{ rancher_hostname }} \
+          --helm-set bootstrapPassword={{ rancher_bootstrap_password }} \
+          --helm-set replicas=1 \
+          --helm-set ingress.enabled=false \
+          --helm-set service.type=NodePort \
+          --helm-set useBundledSystemChart=true \
+          --sync-option ServerSideApply=true \
+          --sync-option CreateNamespace=true \
+          --upsert
+      changed_when: true
+
+    - name: Wait for CRDs to be ready
+      ansible.builtin.pause:
+        seconds: 30
+      when: true
+
+    - name: Sync Rancher application
+      ansible.builtin.shell: |
+        argocd app sync rancher --timeout 600
+      changed_when: false
+
+    - name: Wait for Rancher deployment to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Available deployment/rancher \
+          -n {{ rancher_namespace }} --timeout=300s
+      changed_when: false
+
+    - name: Patch Rancher service with specific NodePort
+      ansible.builtin.shell: |
+        kubectl patch svc rancher -n {{ rancher_namespace }} --type='json' \
+          -p='[{"op": "replace", "path": "/spec/ports/0/nodePort", "value": {{ rancher_nodeport }}},
+               {"op": "replace", "path": "/spec/ports/1/nodePort", "value": {{ rancher_nodeport | int + 1 }}}]'
+      changed_when: true
+
+    - name: Wait for Rancher settings CRD to be available
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Established crd/settings.management.cattle.io --timeout=120s
+      changed_when: false
+
+    - name: Set Rancher server-url
+      ansible.builtin.shell: |
+        kubectl patch settings.management.cattle.io server-url \
+          -p '{"value":"https://{{ rancher_hostname }}:{{ rancher_nodeport | int + 1 }}"}' \
+          --type=merge
+      changed_when: true
+      retries: 5
+      delay: 10
+      register: server_url_result
+      until: server_url_result.rc == 0
+
+    - name: Show access information
+      ansible.builtin.debug:
+        msg: |
+          Rancher Installation Complete!
+
+          Access URL:
+          - Rancher UI (HTTPS): https://{{ rancher_hostname }}:{{ rancher_nodeport | int + 1 }}
+
+          Initial Login:
+          - Bootstrap Password: {{ rancher_bootstrap_password }}
+
+          Check status with:
+          - argocd app get cert-manager
+          - argocd app get rancher
+
+          Note: Accept the self-signed certificate warning in your browser.

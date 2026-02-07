@@ -104,6 +104,15 @@
         state: restarted
         enabled: true
         daemon_reload: true
+    - name: Configure crictl to use containerd
+      ansible.builtin.copy:
+        dest: /etc/crictl.yaml
+        content: |
+          runtime-endpoint: unix:///run/containerd/containerd.sock
+          image-endpoint: unix:///run/containerd/containerd.sock
+          timeout: 10
+          debug: false
+        mode: "0644"
     - name: Install kubelet
       ansible.builtin.apt:
         name: kubelet=1.33.*

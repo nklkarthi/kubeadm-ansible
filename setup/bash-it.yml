@@ -33,3 +33,7 @@
         line: 'export BASH_IT_THEME="powerline"'
       become: true
       become_user: "{{ bash_it_user }}"
+    - name: Set timezone to SGT (Asia/Singapore)
+      ansible.builtin.command: timedatectl set-timezone Asia/Singapore
+      become: true
+      changed_when: true
