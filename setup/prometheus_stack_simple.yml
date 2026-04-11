@@ -52,8 +52,8 @@
           Prometheus Stack Installation Started!
 
           Access URLs (once deployed):
-          - Prometheus: http://737f3fac481c.mylabserver.com:30084
-          - Grafana: http://737f3fac481c.mylabserver.com:30086
-          - Alertmanager: http://737f3fac481c.mylabserver.com:30081
+          - Prometheus: http://{{ groups['master'][0] }}:30084
+          - Grafana: http://{{ groups['master'][0] }}:30086
+          - Alertmanager: http://{{ groups['master'][0] }}:30081
 
           Check status with: argocd app get {{ app_name }}

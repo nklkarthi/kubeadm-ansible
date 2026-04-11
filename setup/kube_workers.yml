@@ -61,6 +61,21 @@
       ansible.builtin.wait_for:
         path: /var/run/containerd/containerd.sock
         timeout: 30
+    - name: Open worker firewall ports
+      ansible.builtin.command: "ufw allow {{ item }}"
+      loop:
+        - "10250/tcp"
+        - "30000:32767/tcp"
+        - "30000:32767/udp"
+      changed_when: false
+    - name: Allow traffic from master node
+      ansible.builtin.command: >
+        ufw allow from
+        {{ hostvars[groups['master'][0]].ansible_facts['default_ipv4']['address'] }}
+      changed_when: false
+    - name: Reload UFW on worker
+      ansible.builtin.command: ufw reload
+      changed_when: false
     - name: Check if node is already joined
       ansible.builtin.shell: |
         set -o pipefail

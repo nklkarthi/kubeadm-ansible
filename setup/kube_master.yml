@@ -3,6 +3,9 @@
   become: true
   vars:
     kube_user: "{{ target_user | default('cloud_user') }}"
+    cni: "{{ cni_plugin | default('calico') }}"   # calico | cilium | none
+    calico_version: "{{ calico_ver | default('v3.30.0') }}"
+    kube_bench_version: "{{ bench_version | default('v0.15.0') }}"
   tasks:
     - name: Create an Empty file for Kubeadm configuring
       ansible.builtin.copy:
@@ -52,6 +55,18 @@
       ansible.builtin.wait_for:
         path: /var/run/containerd/containerd.sock
         timeout: 30
+    - name: Open Kubernetes master firewall ports
+      ansible.builtin.command: "ufw allow {{ item }}"
+      loop:
+        - "6443/tcp"
+        - "2379:2380/tcp"
+        - "10250/tcp"
+        - "10257/tcp"
+        - "10259/tcp"
+      changed_when: false
+    - name: Reload UFW
+      ansible.builtin.command: ufw reload
+      changed_when: false
     - name: Initialize the cluster
       ansible.builtin.shell: |
         kubeadm init --config /etc/kubernetes/kubeadm-config.yaml \
@@ -97,25 +112,37 @@
         owner: "{{ kube_user }}"
         mode: "0644"
       when: admin_conf_stat.stat.exists
-    - name: Install Pod Network
+    - name: Install Calico CNI
       become: true
       become_user: "{{ kube_user }}"
       ansible.builtin.shell: |
         export KUBECONFIG=/home/{{ kube_user }}/.kube/config
         kubectl apply -f \
-          https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/calico.yaml
+          https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
       args:
         chdir: "/home/{{ kube_user }}"
-      when: admin_conf_stat.stat.exists
+      when: admin_conf_stat.stat.exists and cni == 'calico'
       changed_when: false
-      register: calico_result
-    - name: Show Calico installation result
+    - name: Install Cilium CNI
+      become: true
+      become_user: "{{ kube_user }}"
+      ansible.builtin.shell: |
+        set -o pipefail
+        export KUBECONFIG=/home/{{ kube_user }}/.kube/config
+        CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+        curl -sL "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-amd64.tar.gz" \
+          | tar xz -C /usr/local/bin
+        cilium install --set kubeProxyReplacement=false
+      args:
+        chdir: "/home/{{ kube_user }}"
+      when: admin_conf_stat.stat.exists and cni == 'cilium'
+      changed_when: false
+    - name: Show CNI skipped message
       ansible.builtin.debug:
-        var: calico_result.stdout_lines
-      when: admin_conf_stat.stat.exists and calico_result is defined
-
+        msg: "CNI installation skipped. Install your CNI manually before joining workers."
+      when: cni == 'none'
     - name: Install Kubernetes Metrics Server
-      become: yes
+      become: true
       become_user: "{{ kube_user }}"
       tags: metrics_server
       ansible.builtin.shell: >
@@ -123,9 +150,8 @@
       args:
         chdir: "/home/{{ kube_user }}"
       changed_when: true
-    
     - name: Patch metrics-server with --kubelet-insecure-tls
-      become: yes
+      become: true
       become_user: "{{ kube_user }}"
       tags: metrics_server
       ansible.builtin.shell: >
@@ -133,23 +159,94 @@
       args:
         chdir: "/home/{{ kube_user }}"
       changed_when: true
-    - name: Show manual kubeconfig copy instructions
+    - name: Download kube-bench deb package
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/aquasecurity/kube-bench/releases/download/{{ kube_bench_version }}/kube-bench_{{
+          kube_bench_version | regex_replace('^v', '') }}_linux_amd64.deb
+        dest: /tmp/kube-bench.deb
+        mode: "0644"
+
+    - name: Install kube-bench
+      ansible.builtin.apt:
+        deb: /tmp/kube-bench.deb
+        state: present
+
+    - name: Remove kube-bench deb package
+      ansible.builtin.file:
+        path: /tmp/kube-bench.deb
+        state: absent
+
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/{{ kube_user }}/.kube/config
+        dest: /tmp/kubeconfig-kubeadm-lab
+        flat: true
+      when: admin_conf_stat.stat.exists
+
+- name: Merge kubeconfig into local Mac
+  hosts: localhost
+  gather_facts: false
+  vars:
+    temp_config: "/tmp/kubeconfig-kubeadm-lab"
+    master_host: "{{ groups['master'][0] }}"
+
+  tasks:
+    - name: Check temp kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ temp_config }}"
+      register: temp_config_stat
+
+    - name: Replace private IP with public hostname in kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        PRIVATE_IP=$(kubectl --kubeconfig {{ temp_config }} config view \
+          -o jsonpath='{.clusters[0].cluster.server}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        sed "s|https://${PRIVATE_IP}:6443|https://{{ master_host }}:6443|g" \
+          {{ temp_config }} > {{ temp_config }}.new
+        mv {{ temp_config }}.new {{ temp_config }}
+      when: temp_config_stat.stat.exists
+      changed_when: true
+
+    - name: Ensure ~/.kube directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.kube"
+        state: directory
+        mode: "0755"
+      when: temp_config_stat.stat.exists
+
+    - name: Create ~/.kube/config if it does not exist
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.kube/config"
+        state: touch
+        mode: "0600"
+      when: temp_config_stat.stat.exists
+
+    - name: Merge kubeconfig into ~/.kube/config
+      ansible.builtin.shell: |
+        set -o pipefail
+        KUBECONFIG={{ temp_config }}:{{ lookup('env', 'HOME') }}/.kube/config \
+          kubectl config view --flatten > /tmp/kubeconfig-merged
+        mv /tmp/kubeconfig-merged {{ lookup('env', 'HOME') }}/.kube/config
+      when: temp_config_stat.stat.exists
+      changed_when: true
+
+    - name: Remove temp kubeconfig
+      ansible.builtin.file:
+        path: "{{ temp_config }}"
+        state: absent
+      when: temp_config_stat.stat.exists
+
+    - name: Show kubeconfig merge result
       ansible.builtin.debug:
         msg: |
-          =================================================
-          MANUAL STEP REQUIRED: Copy Kubeconfig to Control Host
-          =================================================
+          kubernetes-admin@kubernetes context updated in ~/.kube/config
 
-          To access the cluster from your Mac control host, manually run:
+          Switch context : kubectl config use-context kubernetes-admin@kubernetes
+          List contexts  : kubectl config get-contexts
+      when: temp_config_stat.stat.exists
 
-          scp {{ kube_user }}@{{ ansible_facts['default_ipv4']['address'] }}:\
-            /home/{{ kube_user }}/.kube/config \
-            ~/.kube/config-{{ inventory_hostname }}
-
-          Then merge it into your existing ~/.kube/config or set:
-          export KUBECONFIG=~/.kube/config-{{ inventory_hostname }}
-
-          Cluster endpoint: \
-            https://{{ ansible_facts['default_ipv4']['address'] }}:6443
-
-          =================================================
+    - name: Show kubeconfig skipped warning
+      ansible.builtin.debug:
+        msg: "WARNING: kubeconfig not fetched - kubeadm init may have failed on master"
+      when: not temp_config_stat.stat.exists
