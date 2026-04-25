@@ -1,3 +1,4 @@
+---
 - name: Install fzf on all hosts
   hosts: all
   vars:

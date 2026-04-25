@@ -1,3 +1,4 @@
+---
 - name: Install Bash-it on all hosts
   hosts: all
   vars:

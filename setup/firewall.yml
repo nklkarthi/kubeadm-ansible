@@ -1,3 +1,4 @@
+---
 - name: Configure UFW on Kubernetes nodes
   hosts: all
   become: true

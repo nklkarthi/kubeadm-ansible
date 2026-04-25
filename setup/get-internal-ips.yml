@@ -1,3 +1,4 @@
+---
 - name: Get internal IP addresses for ArgoCD integration
   hosts: all
   gather_facts: true
