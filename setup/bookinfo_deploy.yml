@@ -1,0 +1,137 @@
+---
+- name: Deploy Istio Bookinfo Sample App
+  hosts: master
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+    istio_samples: "{{ istio_samples_path | default('/Users/karthikeyan.b/learn/istio-1.28.0/samples') }}"
+    app_namespace: "{{ bookinfo_namespace | default('default') }}"
+    nodeport_http: "{{ istio_nodeport_http | default('30080') }}"
+
+  tasks:
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/{{ kube_user }}/.kube/config
+        dest: /tmp/kubeconfig-bookinfo
+        flat: true
+      become: true
+      become_user: "{{ kube_user }}"
+
+    - name: Replace private IP with public hostname in kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        PRIVATE_IP=$(kubectl --kubeconfig /tmp/kubeconfig-bookinfo config view \
+          -o jsonpath='{.clusters[0].cluster.server}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        sed "s|https://${PRIVATE_IP}:6443|https://{{ inventory_hostname }}:6443|g" \
+          /tmp/kubeconfig-bookinfo > /tmp/kubeconfig-bookinfo.new
+        mv /tmp/kubeconfig-bookinfo.new /tmp/kubeconfig-bookinfo
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Enable sidecar injection on namespace
+      ansible.builtin.shell: |
+        kubectl label namespace {{ app_namespace }} istio-injection=enabled \
+          --overwrite \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Deploy bookinfo application
+      ansible.builtin.shell: |
+        kubectl apply -f {{ istio_samples }}/bookinfo/platform/kube/bookinfo.yaml \
+          -n {{ app_namespace }} \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Deploy bookinfo gateway and virtualservice
+      ansible.builtin.shell: |
+        kubectl apply -f {{ istio_samples }}/bookinfo/networking/bookinfo-gateway.yaml \
+          -n {{ app_namespace }} \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Wait for bookinfo pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pod \
+          -l app=productpage \
+          -n {{ app_namespace }} \
+          --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Wait for all bookinfo pods to be running
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/details-v1 \
+          -n {{ app_namespace }} --timeout=120s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+        kubectl rollout status deployment/ratings-v1 \
+          -n {{ app_namespace }} --timeout=120s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+        kubectl rollout status deployment/reviews-v1 \
+          -n {{ app_namespace }} --timeout=120s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+        kubectl rollout status deployment/reviews-v2 \
+          -n {{ app_namespace }} --timeout=120s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+        kubectl rollout status deployment/reviews-v3 \
+          -n {{ app_namespace }} --timeout=120s \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Get bookinfo pod status
+      ansible.builtin.shell: |
+        kubectl get pods -n {{ app_namespace }} \
+          --kubeconfig /tmp/kubeconfig-bookinfo
+      delegate_to: localhost
+      become: false
+      register: pod_status
+      changed_when: false
+
+    - name: Verify productpage is reachable via ingressgateway
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}:{{ nodeport_http }}/productpage"
+        method: GET
+        status_code: 200
+        timeout: 30
+      delegate_to: localhost
+      become: false
+      register: curl_result
+      retries: 5
+      delay: 10
+      until: curl_result.status == 200
+
+    - name: Show bookinfo access details
+      ansible.builtin.debug:
+        msg: |
+          Bookinfo deployed successfully!
+
+          Pods:
+          {{ pod_status.stdout }}
+
+          Access:
+            Product page : http://{{ inventory_hostname }}:{{ nodeport_http }}/productpage
+            HTTP status  : {{ curl_result.status }}
+
+          Override samples path:
+            ansible-playbook bookinfo_deploy.yml \
+              -e istio_samples_path=/path/to/istio-x.y.z/samples
+
+    - name: Clean up temporary kubeconfig
+      ansible.builtin.file:
+        path: /tmp/kubeconfig-bookinfo
+        state: absent
+      delegate_to: localhost
+      become: false

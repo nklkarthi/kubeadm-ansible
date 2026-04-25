@@ -1,0 +1,160 @@
+---
+- name: Install Istio Addons (Kiali, Prometheus, Grafana, Jaeger)
+  hosts: master
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+    istio_samples: "{{ istio_samples_path | default('/Users/karthikeyan.b/learn/istio-1.28.0/samples') }}"
+    istio_ns: "istio-system"
+    # Prometheus=30082, Grafana=30083, Jaeger=30084 are hardcoded in sample YAMLs
+    # Kiali defaults to 30081 in sample YAML (conflicts with ingress HTTPS) so we patch it to 30085
+    nodeport_kiali: "{{ addon_nodeport_kiali | default('30085') }}"
+
+  tasks:
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/{{ kube_user }}/.kube/config
+        dest: /tmp/kubeconfig-addons
+        flat: true
+      become: true
+      become_user: "{{ kube_user }}"
+
+    - name: Replace private IP with public hostname in kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        PRIVATE_IP=$(kubectl --kubeconfig /tmp/kubeconfig-addons config view \
+          -o jsonpath='{.clusters[0].cluster.server}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        sed "s|https://${PRIVATE_IP}:6443|https://{{ inventory_hostname }}:6443|g" \
+          /tmp/kubeconfig-addons > /tmp/kubeconfig-addons.new
+        mv /tmp/kubeconfig-addons.new /tmp/kubeconfig-addons
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Apply Prometheus
+      ansible.builtin.shell: |
+        kubectl apply -f {{ istio_samples }}/addons/prometheus.yaml \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Apply Grafana
+      ansible.builtin.shell: |
+        kubectl apply -f {{ istio_samples }}/addons/grafana.yaml \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Apply Jaeger
+      ansible.builtin.shell: |
+        kubectl apply -f {{ istio_samples }}/addons/jaeger.yaml \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Apply Kiali (rewrite hardcoded nodePort 30081 -> {{ nodeport_kiali }} before apply)
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed 's/nodePort: 30081/nodePort: {{ nodeport_kiali | int }}/' \
+          {{ istio_samples }}/addons/kiali.yaml \
+          | kubectl apply -f - --kubeconfig /tmp/kubeconfig-addons
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Enable tracing via Telemetry API (activate jaeger provider at 100% sampling)
+      ansible.builtin.shell: |
+        kubectl apply -f - --kubeconfig /tmp/kubeconfig-addons << 'EOF'
+        apiVersion: telemetry.istio.io/v1
+        kind: Telemetry
+        metadata:
+          name: mesh-default
+          namespace: {{ istio_ns }}
+        spec:
+          tracing:
+          - providers:
+            - name: jaeger
+            randomSamplingPercentage: 100.0
+        EOF
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Wait for Kiali to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/kiali \
+          -n {{ istio_ns }} --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for Grafana to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/grafana \
+          -n {{ istio_ns }} --timeout=180s \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for Prometheus to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/prometheus \
+          -n {{ istio_ns }} --timeout=180s \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Get addon pod status
+      ansible.builtin.shell: |
+        kubectl get pods -n {{ istio_ns }} \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      register: addon_pods
+      changed_when: false
+
+    - name: Get addon service status
+      ansible.builtin.shell: |
+        kubectl get svc -n {{ istio_ns }} \
+          --kubeconfig /tmp/kubeconfig-addons
+      delegate_to: localhost
+      become: false
+      register: addon_svcs
+      changed_when: false
+
+    - name: Show addon access details
+      ansible.builtin.debug:
+        msg: |
+          Istio Addons installed successfully!
+
+          Pods:
+          {{ addon_pods.stdout }}
+
+          Services:
+          {{ addon_svcs.stdout }}
+
+          Access URLs:
+            Kiali      : http://{{ inventory_hostname }}:{{ nodeport_kiali }}
+            Prometheus : http://{{ inventory_hostname }}:30082
+            Grafana    : http://{{ inventory_hostname }}:30083
+            Jaeger     : http://{{ inventory_hostname }}:30084
+
+    - name: Clean up temporary kubeconfig
+      ansible.builtin.file:
+        path: /tmp/kubeconfig-addons
+        state: absent
+      delegate_to: localhost
+      become: false

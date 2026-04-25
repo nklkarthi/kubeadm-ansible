@@ -1,0 +1,147 @@
+---
+- name: Install Istio with NodePort IngressGateway
+  hosts: master
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+    istio_ns: "istio-system"
+    nodeport_http: "{{ istio_nodeport_http | default('30080') }}"
+    nodeport_https: "{{ istio_nodeport_https | default('30081') }}"
+    # Pinned to avoid colliding with addon NodePorts (30082-30085)
+    nodeport_status: "30086"
+    nodeport_tcp: "30087"
+    nodeport_tls: "30088"
+
+  tasks:
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/{{ kube_user }}/.kube/config
+        dest: /tmp/kubeconfig-istio
+        flat: true
+      become: true
+      become_user: "{{ kube_user }}"
+
+    - name: Replace private IP with public hostname in kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        PRIVATE_IP=$(kubectl --kubeconfig /tmp/kubeconfig-istio config view \
+          -o jsonpath='{.clusters[0].cluster.server}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        sed "s|https://${PRIVATE_IP}:6443|https://{{ inventory_hostname }}:6443|g" \
+          /tmp/kubeconfig-istio > /tmp/kubeconfig-istio.new
+        mv /tmp/kubeconfig-istio.new /tmp/kubeconfig-istio
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Check if Istio ingressgateway service already exists
+      ansible.builtin.shell: |
+        kubectl get svc istio-ingressgateway -n {{ istio_ns }} \
+          --kubeconfig /tmp/kubeconfig-istio
+      delegate_to: localhost
+      become: false
+      register: istio_check
+      failed_when: false
+      changed_when: false
+
+    - name: Install Istio with demo profile
+      ansible.builtin.shell: |
+        istioctl install --set profile=demo \
+          --kubeconfig /tmp/kubeconfig-istio \
+          -y
+      delegate_to: localhost
+      become: false
+      when: istio_check.rc != 0
+      changed_when: true
+
+    - name: Patch ingressgateway service to NodePort with fixed ports
+      ansible.builtin.shell: |
+        PATCH='{"spec":{"type":"NodePort","ports":[
+          {"name":"status-port","port":15021,"targetPort":15021,"protocol":"TCP","nodePort":{{ nodeport_status | int }}},
+          {"name":"http2","port":80,"targetPort":8080,"protocol":"TCP","nodePort":{{ nodeport_http | int }}},
+          {"name":"https","port":443,"targetPort":8443,"protocol":"TCP","nodePort":{{ nodeport_https | int }}},
+          {"name":"tcp","port":31400,"targetPort":31400,"protocol":"TCP","nodePort":{{ nodeport_tcp | int }}},
+          {"name":"tls","port":15443,"targetPort":15443,"protocol":"TCP","nodePort":{{ nodeport_tls | int }}}
+        ]}}'
+        kubectl patch svc istio-ingressgateway -n {{ istio_ns }} \
+          --kubeconfig /tmp/kubeconfig-istio \
+          --type=merge \
+          -p "$PATCH"
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Wait for istiod to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/istiod \
+          -n {{ istio_ns }} --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-istio
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for ingressgateway to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/istio-ingressgateway \
+          -n {{ istio_ns }} --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-istio
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Get Istio service details
+      ansible.builtin.shell: |
+        kubectl get svc -n {{ istio_ns }} -o wide \
+          --kubeconfig /tmp/kubeconfig-istio
+      delegate_to: localhost
+      become: false
+      register: istio_services
+      changed_when: false
+
+    - name: Get Istio pod status
+      ansible.builtin.shell: |
+        kubectl get pods -n {{ istio_ns }} \
+          --kubeconfig /tmp/kubeconfig-istio
+      delegate_to: localhost
+      become: false
+      register: istio_pods
+      changed_when: false
+
+    - name: Show Istio access details
+      ansible.builtin.debug:
+        msg: |
+          Istio (demo profile) installed successfully!
+
+          Pods:
+          {{ istio_pods.stdout }}
+
+          Services:
+          {{ istio_services.stdout }}
+
+          IngressGateway NodePorts:
+            HTTP  (http2) : http://{{ inventory_hostname }}:{{ nodeport_http }}
+            HTTPS         : https://{{ inventory_hostname }}:{{ nodeport_https }}
+            status-port   : {{ nodeport_status }} (health only)
+            tcp           : {{ nodeport_tcp }}
+            tls           : {{ nodeport_tls }}
+
+          Enable sidecar injection on a namespace:
+            kubectl label namespace <your-ns> istio-injection=enabled
+
+          Verify installation:
+            istioctl verify-install --kubeconfig ~/.kube/config
+
+          Install addons (Kiali, Prometheus, Grafana, Jaeger):
+            ansible-playbook istio_addons.yml
+
+    - name: Clean up temporary kubeconfig
+      ansible.builtin.file:
+        path: /tmp/kubeconfig-istio
+        state: absent
+      delegate_to: localhost
+      become: false
