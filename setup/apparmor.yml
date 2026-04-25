@@ -1,0 +1,59 @@
+- name: Configure AppArmor on all hosts
+  hosts: all
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+  tasks:
+    - name: Install AppArmor packages
+      ansible.builtin.apt:
+        name:
+          - apparmor
+          - apparmor-utils
+          - apparmor-profiles
+          - apparmor-profiles-extra
+        state: present
+        update_cache: true
+
+    - name: Enable AppArmor service
+      ansible.builtin.systemd:
+        name: apparmor
+        enabled: true
+        state: started
+
+    - name: Ensure AppArmor is enabled in GRUB
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX='
+        line: 'GRUB_CMDLINE_LINUX="apparmor=1 security=apparmor"'
+      register: grub_updated
+
+    - name: Update GRUB if changed
+      ansible.builtin.command: update-grub
+      when: grub_updated.changed
+      changed_when: true
+
+    - name: Ensure custom seccomp profiles directory exists
+      ansible.builtin.file:
+        path: /var/lib/kubelet/seccomp/profiles
+        state: directory
+        mode: "0755"
+
+    - name: Check AppArmor status
+      ansible.builtin.command: aa-status
+      register: apparmor_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check seccomp support in kernel
+      ansible.builtin.command: grep CONFIG_SECCOMP /boot/config-{{ ansible_facts['kernel'] }}
+      register: seccomp_status
+      changed_when: false
+      failed_when: false
+
+    - name: Show security status
+      ansible.builtin.debug:
+        msg:
+          - "=== AppArmor ==="
+          - "{{ apparmor_status.stdout_lines }}"
+          - "=== Seccomp ==="
+          - "{{ seccomp_status.stdout_lines }}"

@@ -1,0 +1,89 @@
+- name: Install and configure gVisor runtime on all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Add gVisor GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://gvisor.dev/archive.key \
+          | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/gvisor-archive-keyring.gpg
+
+    - name: Add gVisor APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}
+          signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg]
+          https://storage.googleapis.com/gvisor/releases release main
+        filename: gvisor
+        state: present
+        update_cache: true
+
+    - name: Install runsc
+      ansible.builtin.apt:
+        name: runsc
+        state: present
+
+    - name: Get installed runsc version
+      ansible.builtin.shell: |
+        runsc --version | grep 'runsc version' | sed 's/runsc version release-//'
+      register: runsc_ver
+      changed_when: false
+
+    - name: Show installed runsc version
+      ansible.builtin.debug:
+        msg: "runsc version: {{ runsc_ver.stdout | trim }}"
+
+    - name: Download containerd-shim-runsc-v1 and its checksum
+      ansible.builtin.shell: |
+        RELEASE="{{ runsc_ver.stdout | trim }}"
+        BASE="https://storage.googleapis.com/gvisor/releases/release/${RELEASE}/x86_64"
+        wget -q "${BASE}/containerd-shim-runsc-v1" -O /tmp/containerd-shim-runsc-v1
+        wget -q "${BASE}/containerd-shim-runsc-v1.sha512" -O /tmp/containerd-shim-runsc-v1.sha512
+        cd /tmp && sha512sum -c containerd-shim-runsc-v1.sha512
+        chmod 0755 /tmp/containerd-shim-runsc-v1
+        mv /tmp/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
+        rm -f /tmp/containerd-shim-runsc-v1.sha512
+      args:
+        creates: /usr/local/bin/containerd-shim-runsc-v1
+
+    - name: Create containerd conf.d drop-in directory
+      ansible.builtin.file:
+        path: /etc/containerd/conf.d
+        state: directory
+        mode: "0755"
+
+    - name: Configure gVisor runtime in containerd drop-in
+      ansible.builtin.copy:
+        dest: /etc/containerd/conf.d/gvisor.toml
+        mode: "0644"
+        content: |
+          [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+            runtime_type = 'io.containerd.runsc.v1'
+            sandboxer = 'podsandbox'
+            pod_annotations = ['dev.gvisor.*']
+            container_annotations = ['dev.gvisor.*']
+      register: gvisor_config
+
+    - name: Restart containerd to apply gVisor runtime
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: true
+      when: gvisor_config.changed
+
+    - name: Wait for containerd socket to be ready
+      ansible.builtin.wait_for:
+        path: /run/containerd/containerd.sock
+        timeout: 30
+
+    - name: Verify containerd sees runsc runtime
+      ansible.builtin.shell: |
+        containerd config dump | grep -A3 'runtimes.runsc'
+      register: runtime_check
+      changed_when: false
+      failed_when: false
+
+    - name: Show runsc runtime config
+      ansible.builtin.debug:
+        msg: "{{ runtime_check.stdout_lines }}"
