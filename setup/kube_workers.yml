@@ -1,3 +1,4 @@
+---
 - name: Configure Join Commands on Master Node
   hosts: master
   become: true

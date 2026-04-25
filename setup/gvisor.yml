@@ -4,9 +4,11 @@
   tasks:
     - name: Add gVisor GPG key
       ansible.builtin.shell: |
+        set -o pipefail
         curl -fsSL https://gvisor.dev/archive.key \
           | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
       args:
+        executable: /bin/bash
         creates: /usr/share/keyrings/gvisor-archive-keyring.gpg
 
     - name: Add gVisor APT repository
@@ -26,7 +28,10 @@
 
     - name: Get installed runsc version
       ansible.builtin.shell: |
+        set -o pipefail
         runsc --version | grep 'runsc version' | sed 's/runsc version release-//'
+      args:
+        executable: /bin/bash
       register: runsc_ver
       changed_when: false
 
@@ -79,7 +84,10 @@
 
     - name: Verify containerd sees runsc runtime
       ansible.builtin.shell: |
+        set -o pipefail
         containerd config dump | grep -A3 'runtimes.runsc'
+      args:
+        executable: /bin/bash
       register: runtime_check
       changed_when: false
       failed_when: false

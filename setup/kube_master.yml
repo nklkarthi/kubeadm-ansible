@@ -1,3 +1,4 @@
+---
 - name: Configure Kubernetes master
   hosts: master
   become: true

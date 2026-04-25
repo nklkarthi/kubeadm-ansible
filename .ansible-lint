@@ -2,5 +2,5 @@
 skip_list:
   - yaml[line-length]
 
-# Allow longer lines for URLs, JSON paths, and complex commands
-warn_list: []
+warn_list:
+  - yaml[document-start]
