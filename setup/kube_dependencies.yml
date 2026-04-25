@@ -2,7 +2,7 @@
   hosts: all
   become: true
   vars:
-    kube_version: "{{ k8s_version | default('v1.33') }}"
+    kube_version: "{{ k8s_version | default('v1.34') }}"
   tasks:
     - name: Update apt cache
       ansible.builtin.apt:
@@ -142,7 +142,7 @@
   hosts: master
   become: true
   vars:
-    kube_version: "{{ k8s_version | default('v1.33') }}"
+    kube_version: "{{ k8s_version | default('v1.34') }}"
   tasks:
     - name: Install kubectl
       ansible.builtin.apt:

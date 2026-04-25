@@ -55,18 +55,6 @@
       ansible.builtin.wait_for:
         path: /var/run/containerd/containerd.sock
         timeout: 30
-    - name: Open Kubernetes master firewall ports
-      ansible.builtin.command: "ufw allow {{ item }}"
-      loop:
-        - "6443/tcp"
-        - "2379:2380/tcp"
-        - "10250/tcp"
-        - "10257/tcp"
-        - "10259/tcp"
-      changed_when: false
-    - name: Reload UFW
-      ansible.builtin.command: ufw reload
-      changed_when: false
     - name: Initialize the cluster
       ansible.builtin.shell: |
         kubeadm init --config /etc/kubernetes/kubeadm-config.yaml \
