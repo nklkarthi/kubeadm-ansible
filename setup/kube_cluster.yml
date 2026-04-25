@@ -1,0 +1,12 @@
+---
+- name: Setup Kubernetes Cluster
+  import_playbook: firewall.yml
+
+- name: Install Kubernetes Dependencies
+  import_playbook: kube_dependencies.yml
+
+- name: Configure Master Node
+  import_playbook: kube_master.yml
+
+- name: Configure Worker Nodes
+  import_playbook: kube_workers.yml
