@@ -69,19 +69,7 @@
             sandboxer = 'podsandbox'
             pod_annotations = ['dev.gvisor.*']
             container_annotations = ['dev.gvisor.*']
-      register: gvisor_config
-
-    - name: Restart containerd to apply gVisor runtime
-      ansible.builtin.systemd:
-        name: containerd
-        state: restarted
-        daemon_reload: true
-      when: gvisor_config.changed
-
-    - name: Wait for containerd socket to be ready
-      ansible.builtin.wait_for:
-        path: /run/containerd/containerd.sock
-        timeout: 30
+      notify: Restart containerd
 
     - name: Verify containerd sees runsc runtime
       ansible.builtin.shell: |
@@ -96,3 +84,16 @@
     - name: Show runsc runtime config
       ansible.builtin.debug:
         msg: "{{ runtime_check.stdout_lines }}"
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: true
+      notify: Wait for containerd socket
+
+    - name: Wait for containerd socket
+      ansible.builtin.wait_for:
+        path: /run/containerd/containerd.sock
+        timeout: 30
