@@ -57,7 +57,7 @@
       become: false
       changed_when: true
 
-    - name: Apply Kiali (rewrite hardcoded nodePort 30081 -> {{ nodeport_kiali }} before apply)
+    - name: Apply Kiali rewriting hardcoded nodePort 30081 to {{ nodeport_kiali }}
       ansible.builtin.shell: |
         set -o pipefail
         sed 's/nodePort: 30081/nodePort: {{ nodeport_kiali | int }}/' \
