@@ -1,0 +1,111 @@
+---
+- name: Install Falco runtime security on all nodes
+  hosts: all
+  become: true
+  vars:
+    falco_driver: "{{ falco_driver_type | default('modern_ebpf') }}"
+    # modern_ebpf: no kernel headers needed, requires kernel >= 5.8 (we have 6.8)
+    # kmod: kernel module, requires linux-headers
+    # ebpf: classic eBPF, requires linux-headers
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+        state: present
+        update_cache: true
+
+    - name: Add Falco GPG key
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -fsSL https://falco.org/repo/falcosecurity-packages.asc \
+          | gpg --dearmor -o /usr/share/keyrings/falco-archive-keyring.gpg
+      args:
+        executable: /bin/bash
+        creates: /usr/share/keyrings/falco-archive-keyring.gpg
+
+    - name: Add Falco APT repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/falcosecurity.list
+        mode: "0644"
+        content: |
+          deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] https://download.falco.org/packages/deb stable main
+
+    - name: Install Falco (non-interactive)
+      ansible.builtin.apt:
+        name: falco
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        FALCO_DRIVER_CHOICE: "{{ falco_driver }}"
+
+    - name: Configure Falco driver to modern_ebpf
+      ansible.builtin.lineinfile:
+        path: /etc/falco/falco.yaml
+        regexp: '^engine:'
+        line: "engine:\n  kind: {{ falco_driver }}"
+      notify: Restart Falco
+
+    - name: Ensure Falco service is enabled and started
+      ansible.builtin.systemd:
+        name: falco
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for Falco to be running
+      ansible.builtin.systemd:
+        name: falco
+      register: falco_status
+      until: falco_status.status.ActiveState == "active"
+      retries: 10
+      delay: 5
+
+    - name: Verify Falco is capturing events
+      ansible.builtin.shell: |
+        set -o pipefail
+        journalctl -u falco --since "1 minute ago" --no-pager | tail -5
+      args:
+        executable: /bin/bash
+      register: falco_log
+      changed_when: false
+      failed_when: false
+
+    - name: Get Falco version
+      ansible.builtin.command: falco --version
+      register: falco_version
+      changed_when: false
+
+    - name: Show Falco installation details
+      ansible.builtin.debug:
+        msg: |
+          Falco installed on {{ inventory_hostname }}
+
+          Version : {{ falco_version.stdout_lines[0] }}
+          Driver  : {{ falco_driver }}
+          Status  : {{ falco_status.status.ActiveState }}
+
+          Recent logs:
+          {{ falco_log.stdout | default('No logs yet') }}
+
+          Key files for CKS exam:
+            Config      : /etc/falco/falco.yaml
+            Default rules : /etc/falco/falco_rules.yaml        (do not edit)
+            Custom rules  : /etc/falco/falco_rules.local.yaml  (edit this)
+
+          Useful commands:
+            Watch alerts  : journalctl -fu falco
+            Test rule     : falco -r /etc/falco/falco_rules.yaml --dry-run
+            List rules    : falco --list
+            Check config  : falco --validate /etc/falco/falco.yaml
+
+  handlers:
+    - name: Restart Falco
+      ansible.builtin.systemd:
+        name: falco
+        state: restarted
+        daemon_reload: true
