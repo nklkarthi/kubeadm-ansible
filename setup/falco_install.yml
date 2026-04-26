@@ -60,6 +60,34 @@
       changed_when: "'already' not in falcoctl_result.stdout"
       notify: Restart Falco
 
+    - name: Install falco-incubating-rules via falcoctl
+      ansible.builtin.command: falcoctl artifact install falco-incubating-rules
+      register: incubating_result
+      changed_when: "'already' not in incubating_result.stdout"
+
+    - name: Install falco-sandbox-rules via falcoctl
+      ansible.builtin.command: falcoctl artifact install falco-sandbox-rules
+      register: sandbox_result
+      changed_when: "'already' not in sandbox_result.stdout"
+
+    - name: Move incubating rules to rules.d for auto-loading
+      ansible.builtin.shell: |
+        if [ -f /etc/falco/falco-incubating_rules.yaml ]; then
+          mv /etc/falco/falco-incubating_rules.yaml /etc/falco/rules.d/
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Move sandbox rules to rules.d for auto-loading
+      ansible.builtin.shell: |
+        if [ -f /etc/falco/falco-sandbox_rules.yaml ]; then
+          mv /etc/falco/falco-sandbox_rules.yaml /etc/falco/rules.d/
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Ensure Falco service is enabled and started
       ansible.builtin.systemd:
         name: falco
@@ -103,9 +131,11 @@
           {{ falco_log.stdout | default('No logs yet') }}
 
           Key files for CKS exam:
-            Config      : /etc/falco/falco.yaml
-            Default rules : /etc/falco/falco_rules.yaml        (do not edit)
-            Custom rules  : /etc/falco/falco_rules.local.yaml  (edit this)
+            Config        : /etc/falco/falco.yaml
+            Stable rules  : /etc/falco/falco_rules.yaml                        (do not edit)
+            Incubating    : /etc/falco/rules.d/falco-incubating_rules.yaml     (do not edit)
+            Sandbox       : /etc/falco/rules.d/falco-sandbox_rules.yaml        (do not edit)
+            Custom rules  : /etc/falco/falco_rules.local.yaml                  (edit this)
 
           Useful commands:
             Watch alerts  : journalctl -fu {{ falco_svc }}
