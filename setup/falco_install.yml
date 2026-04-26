@@ -7,6 +7,10 @@
     # modern_ebpf: no kernel headers needed, requires kernel >= 5.8 (we have 6.8)
     # kmod: kernel module, requires linux-headers
     # ebpf: classic eBPF, requires linux-headers
+    # falco.service is a dispatcher that exits after starting the driver-specific service.
+    # The actual running daemon is falco-<driver>.service (e.g. falco-modern-bpf.service).
+    # falco_svc maps the driver name to the real systemd unit name.
+    falco_svc: "falco-{{ 'modern-bpf' if falco_driver == 'modern_ebpf' else falco_driver }}.service"
 
   tasks:
     - name: Install required packages
@@ -65,7 +69,7 @@
 
     - name: Wait for Falco to be running
       ansible.builtin.systemd:
-        name: falco
+        name: "{{ falco_svc }}"
       register: falco_status
       until: falco_status.status.ActiveState == "active"
       retries: 10
@@ -74,7 +78,7 @@
     - name: Verify Falco is capturing events
       ansible.builtin.shell: |
         set -o pipefail
-        journalctl -u falco --since "1 minute ago" --no-pager | tail -5
+        journalctl -u {{ falco_svc }} --since "1 minute ago" --no-pager | tail -5
       args:
         executable: /bin/bash
       register: falco_log
@@ -104,7 +108,7 @@
             Custom rules  : /etc/falco/falco_rules.local.yaml  (edit this)
 
           Useful commands:
-            Watch alerts  : journalctl -fu falco
+            Watch alerts  : journalctl -fu {{ falco_svc }}
             Test rule     : falco -r /etc/falco/falco_rules.yaml --dry-run
             List rules    : falco --list
             Check config  : falco --validate /etc/falco/falco.yaml
@@ -112,6 +116,6 @@
   handlers:
     - name: Restart Falco
       ansible.builtin.systemd:
-        name: falco
+        name: "{{ falco_svc }}"
         state: restarted
         daemon_reload: true
