@@ -1,0 +1,151 @@
+---
+- name: Install nginx Ingress Controller with NodePort
+  hosts: master
+  become: true
+  vars:
+    kube_user: "{{ target_user | default('cloud_user') }}"
+    nginx_version: "{{ nginx_ingress_version | default('v1.15.1') }}"
+    nginx_ns: "ingress-nginx"
+    nodeport_http: "{{ nginx_nodeport_http | default('30086') }}"
+    nodeport_https: "{{ nginx_nodeport_https | default('30087') }}"
+
+  tasks:
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/{{ kube_user }}/.kube/config
+        dest: /tmp/kubeconfig-nginx
+        flat: true
+      become: true
+      become_user: "{{ kube_user }}"
+
+    - name: Replace private IP with public hostname in kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        PRIVATE_IP=$(kubectl --kubeconfig /tmp/kubeconfig-nginx config view \
+          -o jsonpath='{.clusters[0].cluster.server}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        sed "s|https://${PRIVATE_IP}:6443|https://{{ inventory_hostname }}:6443|g" \
+          /tmp/kubeconfig-nginx > /tmp/kubeconfig-nginx.new
+        mv /tmp/kubeconfig-nginx.new /tmp/kubeconfig-nginx
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Check if nginx ingress controller is already installed
+      ansible.builtin.shell: |
+        kubectl get deployment ingress-nginx-controller \
+          -n {{ nginx_ns }} \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      register: nginx_check
+      failed_when: false
+      changed_when: false
+
+    - name: Install nginx ingress controller {{ nginx_version }} (baremetal)
+      ansible.builtin.shell: |
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ nginx_version }}/deploy/static/provider/baremetal/deploy.yaml \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      when: nginx_check.rc != 0
+      changed_when: true
+
+    - name: Wait for nginx ingress controller to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/ingress-nginx-controller \
+          -n {{ nginx_ns }} --timeout=300s \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Patch nginx ingress controller service to fixed NodePorts
+      ansible.builtin.shell: |
+        PATCH='{"spec":{"ports":[
+          {"name":"http","port":80,"targetPort":"http","protocol":"TCP","nodePort":{{ nodeport_http | int }}},
+          {"name":"https","port":443,"targetPort":"https","protocol":"TCP","nodePort":{{ nodeport_https | int }}}
+        ]}}'
+        kubectl patch svc ingress-nginx-controller \
+          -n {{ nginx_ns }} \
+          --kubeconfig /tmp/kubeconfig-nginx \
+          --type=merge \
+          -p "$PATCH"
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Get nginx ingress controller pod status
+      ansible.builtin.shell: |
+        kubectl get pods -n {{ nginx_ns }} \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      register: nginx_pods
+      changed_when: false
+
+    - name: Get nginx ingress controller service
+      ansible.builtin.shell: |
+        kubectl get svc -n {{ nginx_ns }} \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      register: nginx_svc
+      changed_when: false
+
+    - name: Get ingress class
+      ansible.builtin.shell: |
+        kubectl get ingressclass \
+          --kubeconfig /tmp/kubeconfig-nginx
+      delegate_to: localhost
+      become: false
+      register: ingress_class
+      changed_when: false
+
+    - name: Show nginx ingress access details
+      ansible.builtin.debug:
+        msg: |
+          nginx Ingress Controller {{ nginx_version }} installed!
+
+          Pods:
+          {{ nginx_pods.stdout }}
+
+          Services:
+          {{ nginx_svc.stdout }}
+
+          IngressClass:
+          {{ ingress_class.stdout }}
+
+          NodePorts (firewall range 30080-30089):
+            HTTP  : http://{{ inventory_hostname }}:{{ nodeport_http }}
+            HTTPS : https://{{ inventory_hostname }}:{{ nodeport_https }}
+
+          Create an Ingress resource:
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: my-app
+              annotations:
+                kubernetes.io/ingress.class: nginx
+            spec:
+              rules:
+              - host: my-app.example.com
+                http:
+                  paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: my-service
+                        port:
+                          number: 80
+
+    - name: Clean up temporary kubeconfig
+      ansible.builtin.file:
+        path: /tmp/kubeconfig-nginx
+        state: absent
+      delegate_to: localhost
+      become: false

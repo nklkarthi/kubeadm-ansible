@@ -7,10 +7,10 @@
     istio_ns: "istio-system"
     nodeport_http: "{{ istio_nodeport_http | default('30080') }}"
     nodeport_https: "{{ istio_nodeport_https | default('30081') }}"
-    # Pinned to avoid colliding with addon NodePorts (30082-30085)
-    nodeport_status: "30086"
-    nodeport_tcp: "30087"
-    nodeport_tls: "30088"
+    # Outside 30080-30089 firewall range - not user-facing, no external access needed
+    nodeport_status: "31021"
+    nodeport_tcp: "31400"
+    nodeport_tls: "31443"
 
   tasks:
     - name: Fetch kubeconfig from master
@@ -123,12 +123,10 @@
           Services:
           {{ istio_services.stdout }}
 
-          IngressGateway NodePorts:
+          IngressGateway NodePorts (firewall range 30080-30089):
             HTTP  (http2) : http://{{ inventory_hostname }}:{{ nodeport_http }}
             HTTPS         : https://{{ inventory_hostname }}:{{ nodeport_https }}
-            status-port   : {{ nodeport_status }} (health only)
-            tcp           : {{ nodeport_tcp }}
-            tls           : {{ nodeport_tls }}
+            status/tcp/tls: {{ nodeport_status }}/{{ nodeport_tcp }}/{{ nodeport_tls }} (internal only, outside firewall range)
 
           Enable sidecar injection on a namespace:
             kubectl label namespace <your-ns> istio-injection=enabled
