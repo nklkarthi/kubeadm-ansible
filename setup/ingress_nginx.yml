@@ -43,7 +43,7 @@
       failed_when: false
       changed_when: false
 
-    - name: Install nginx ingress controller {{ nginx_version }} (baremetal)
+    - name: Install nginx ingress controller baremetal {{ nginx_version }}
       ansible.builtin.shell: |
         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ nginx_version }}/deploy/static/provider/baremetal/deploy.yaml \
           --kubeconfig /tmp/kubeconfig-nginx
