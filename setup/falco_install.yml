@@ -43,11 +43,17 @@
         DEBIAN_FRONTEND: noninteractive
         FALCO_DRIVER_CHOICE: "{{ falco_driver }}"
 
-    - name: Configure Falco driver to modern_ebpf
-      ansible.builtin.lineinfile:
-        path: /etc/falco/falco.yaml
-        regexp: '^engine:'
-        line: "engine:\n  kind: {{ falco_driver }}"
+    - name: Remove legacy engine.kind line injected directly into falco.yaml (idempotent)
+      ansible.builtin.shell: |
+        sed -i '/^engine:/{n; /^  kind: /d}' /etc/falco/falco.yaml
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Set Falco driver via falcoctl (manages config.d/engine-kind-falcoctl.yaml)
+      ansible.builtin.command: falcoctl driver config --type {{ falco_driver }}
+      register: falcoctl_result
+      changed_when: "'already' not in falcoctl_result.stdout"
       notify: Restart Falco
 
     - name: Ensure Falco service is enabled and started
