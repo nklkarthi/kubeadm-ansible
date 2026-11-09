@@ -20,7 +20,6 @@
     - name: Select the private archive path
       ansible.builtin.set_fact:
         cached_image_archive: '{{ repository_root }}/artifacts/images/{{ (image_request.image ~ cached_image_platform) | hash("sha256") }}.tar'
-        guest_image_archive: /tmp/cert-image-{{ (image_request.image ~ cached_image_platform) | hash("sha256") }}.tar
     - name: Create the private controller image cache
       ansible.builtin.file:
         path: "{{ repository_root }}/artifacts/images"
@@ -35,7 +34,7 @@
         cmd: |
           set -eu
           cert_image_path={{ cached_image_archive | quote }}
-          cert_image_partial="${cert_image_path}.partial"
+          cert_image_partial=$(mktemp "${cert_image_path}.partial.XXXXXX")
           trap 'rm -f "$cert_image_partial"' EXIT
           {{ registry_binary | quote }} pull --platform {{ cached_image_platform | quote }} {{ image_request.image | quote }} "$cert_image_partial"
           mv "$cert_image_partial" "$cert_image_path"
@@ -43,10 +42,17 @@
       throttle: 1
     - name: Transfer and import the required image
       block:
+        - name: Allocate a private transfer archive for this invocation
+          ansible.builtin.tempfile:
+            state: file
+            prefix: cert-image-
+            suffix: .tar
+          register: guest_image_transfer
+          delegate_to: '{{ image_request.host }}'
         - name: Transfer the archive to the scheduled guest
           ansible.builtin.copy:
             src: "{{ cached_image_archive }}"
-            dest: "{{ guest_image_archive }}"
+            dest: "{{ guest_image_transfer.path }}"
             mode: "0600"
           delegate_to: "{{ image_request.host }}"
         - name: Import the image into Kubernetes' containerd namespace
@@ -57,12 +63,13 @@
               - k8s.io
               - images
               - import
-              - "{{ guest_image_archive }}"
+              - "{{ guest_image_transfer.path }}"
           delegate_to: "{{ image_request.host }}"
           changed_when: true
       always:
         - name: Remove the guest transfer archive
           ansible.builtin.file:
-            path: "{{ guest_image_archive }}"
+            path: "{{ guest_image_transfer.path }}"
             state: absent
           delegate_to: "{{ image_request.host }}"
+          when: guest_image_transfer.path is defined
