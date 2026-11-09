@@ -1,0 +1,48 @@
+---
+- name: Read the installed Corepack client
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/corepack', --version]
+  register: controller_corepack_version
+  changed_when: false
+  failed_when: false
+- name: Install the pinned JavaScript package manager through Node's package manager
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/npm', install, --global, --prefix, '{{ controller_brew_prefix.stdout }}', 'corepack@{{ tool_versions.corepack }}']
+  when: controller_corepack_version.rc != 0 or controller_corepack_version.stdout | trim != tool_versions.corepack
+  changed_when: true
+- name: Read the active default Yarn version
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/corepack', yarn, --version]
+  environment:
+    COREPACK_ENABLE_NETWORK: '0'
+  register: controller_yarn_version
+  changed_when: false
+  failed_when: false
+- name: Cache and select the matching Yarn release for Backstage
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/corepack', install, --global, 'yarn@{{ tool_versions.yarn }}']
+  when: controller_yarn_version.rc != 0 or controller_yarn_version.stdout | trim != tool_versions.yarn
+  changed_when: true
+- name: Check whether the interactive Yarn shim is already available
+  ansible.builtin.stat:
+    path: '{{ controller_brew_prefix.stdout }}/bin/yarn'
+  register: controller_yarn_shim
+- name: Expose the selected Yarn client in the controller PATH
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/corepack', enable, --install-directory, '{{ controller_brew_prefix.stdout }}/bin', yarn]
+  when: not controller_yarn_shim.stat.exists
+  changed_when: true
+- name: Verify the installed JavaScript development clients
+  ansible.builtin.command:
+    argv: ['{{ controller_brew_prefix.stdout }}/bin/{{ item.command }}', --version]
+  loop:
+    - {command: corepack, version: '{{ tool_versions.corepack }}'}
+    - {command: yarn, version: '{{ tool_versions.yarn }}'}
+  loop_control:
+    label: '{{ item.command }} {{ item.version }}'
+  register: controller_javascript_version
+  changed_when: false
+  failed_when: controller_javascript_version.rc != 0 or controller_javascript_version.stdout | trim != item.version
+- name: Record the verified package-manager paths
+  ansible.builtin.set_fact:
+    controller_binaries: '{{ controller_binaries | combine({"corepack": controller_brew_prefix.stdout ~ "/bin/corepack", "yarn": controller_brew_prefix.stdout ~ "/bin/yarn"}) }}'

@@ -59,3 +59,10 @@ __pycache__/
 /kubeconfig
 *.kubeconfig
 .kube/
+
+# Local JavaScript dependencies and package-manager caches
+node_modules/
+.yarn/
+.pnp.*
+npm-debug.log*
+yarn-error.log*

@@ -15,6 +15,17 @@
   loop: [blue, green]
   loop_control:
     loop_var: delivery_revision
+- name: Inspect the healthy rollout with the controller-side plugin
+  ansible.builtin.command:
+    argv: ['{{ rollouts_binary | default("kubectl-argo-rollouts") }}', get, rollout, delivery, --namespace, '{{ test_namespace }}', --no-color, --kubeconfig, '{{ controller_kubeconfig | default(repository_root ~ "/artifacts/kubeconfig") }}']
+  delegate_to: localhost
+  become: false
+  register: rollouts_client_status
+  changed_when: false
+  failed_when: rollouts_client_status.rc != 0 or 'Healthy' not in rollouts_client_status.stdout
+  until: rollouts_client_status.rc == 0 and 'Healthy' in rollouts_client_status.stdout
+  retries: 12
+  delay: 2
 - name: Record verified progressive delivery
   ansible.builtin.set_fact:
-    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Rollouts promotes two blue-green revisions and switches actual service traffic"] }}'
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Rollouts promotes two blue-green revisions and switches actual service traffic", "the controller-side Rollouts plugin reads the healthy deployed revision"] }}'

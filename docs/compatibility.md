@@ -34,6 +34,13 @@ Python interpreter and APT or DNF packages. Kubernetes operations run on the
 selected Ubuntu control plane with its explicit admin kubeconfig. LFCS and LFCA
 use dedicated AlmaLinux 10.2 guests without Kubernetes.
 
+Controller clients are selected by component in `setup/hosts/controller_tools.yml`.
+The Argo Rollouts Homebrew tap currently provides client 1.10.0 for the 1.10.2
+controller. The standalone Crossplane CLI is pinned to 2.5.0 independently of
+Crossplane core 2.4.3. Backstage development uses Node 24.22.2, Corepack 0.36.0
+and Yarn 4.18.0. Homebrew manages Node; npm installs Corepack without pulling a
+second, unsupported Node major through the Corepack Homebrew formula.
+
 Istio demonstration add-ons are intended for exercises. Installing Jaeger does
 not configure an application tracing provider automatically. Configure Istio's
 tracing provider before creating tracing policies.

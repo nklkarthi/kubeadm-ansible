@@ -20,6 +20,13 @@ tool_versions:
   prometheus_stack: 93.1.0
   helm: v4.3.1
   crane: v0.22.1
+  kubectl: v1.37.2
+  argo_rollouts_cli: v1.10.0
+  crossplane_cli: v2.5.0
+  kustomize: v5.8.3
+  node: v24.22.2
+  corepack: '0.36.0'
+  yarn: '4.18.0'
   argo_workflows: v4.1.6
   argo_rollouts: v1.10.2
   argo_events: v1.9.11
@@ -88,6 +95,9 @@ repository_root: '{{ ansible_config_file | dirname }}'
 helm_binary: '{{ hostvars.localhost.controller_binaries.helm | default("helm") }}'
 registry_binary: '{{ hostvars.localhost.controller_binaries.crane | default("crane") }}'
 kyverno_binary: '{{ hostvars.localhost.controller_binaries.kyverno | default("kyverno") }}'
+argo_binary: '{{ hostvars.localhost.controller_binaries.argo | default("argo") }}'
+rollouts_binary: '{{ hostvars.localhost.controller_binaries["kubectl-argo-rollouts"] | default("kubectl-argo-rollouts") }}'
+crossplane_binary: '{{ hostvars.localhost.controller_binaries.crossplane | default("crossplane") }}'
 cilium_binary: '{{ hostvars.localhost.controller_binaries.cilium | default("cilium") }}'
 hubble_binary: '{{ hostvars.localhost.controller_binaries.hubble | default("hubble") }}'
 sandbox_image: registry.k8s.io/pause:3.10.2

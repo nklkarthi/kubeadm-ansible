@@ -222,10 +222,13 @@ for those exercises. The Backstage 1.55.2 release uses app generator 0.9.2 and
 supports Node.js 22 or 24:
 
 ```bash
-brew install node@24 corepack
-export PATH="$(brew --prefix node@24)/bin:$PATH"
+ansible-playbook -i setup/inventory setup/hosts/controller_tools.yml \
+  -e @profiles/certifications/cba.yml
+mkdir -p "$HOME/backstage-practice"
+cd "$HOME/backstage-practice"
+# Choose practice-backstage when prompted for the application name:
 npx --yes @backstage/create-app@0.9.2
-# Enter the generated application directory, then use its selected Yarn version:
+cd practice-backstage
 corepack yarn install
 corepack yarn tsc
 corepack yarn build:backend
@@ -252,6 +255,42 @@ For KCA, the checks exercise admission mutation, CEL denial and the controller's
 verification, background reports, policy exceptions, cleanup and metrics using
 the [Kyverno guides](https://kyverno.io/docs/). Compare traditional policy types
 with CEL policies before attempting an upgrade or high availability exercise.
+
+## Controller clients
+
+Run the clients from WSL or macOS, using the selected lab's kubeconfig. Profile
+setup installs only the clients required by its selected components. Installed
+clients can be shared between fresh labs; they run when invoked.
+
+| Selected component | Controller clients |
+| --- | --- |
+| Kubernetes base | `kubectl`, Helm and crane |
+| Argo CD | `argocd` and Kustomize |
+| Argo Workflows | `argo` |
+| Argo Rollouts | `kubectl argo rollouts`, from the official `argoproj/tap` |
+| Istio | `istioctl` |
+| Cilium | `cilium` and `hubble` |
+| Kyverno | `kyverno` |
+| Crossplane | `crossplane` |
+| Backstage development | Node 24, npm, Corepack and Yarn 4 |
+| OpenTelemetry | `kubectl` for the Collector and SDK packages in the application being instrumented |
+| Linux-only labs | SSH and Ansible on the controller; Linux administration tools inside the selected guest |
+
+Kubernetes 1.37's client supports the 1.36 and 1.37 cluster profiles under the
+[kubectl version-skew policy](https://kubernetes.io/releases/version-skew-policy/#kubectl).
+Other client releases are pinned separately where their upstream release lines
+differ from their controllers. The Argo CD CLI uses an Argo CD server login, or
+core mode with a kubeconfig context whose namespace is `argocd`; a normal
+Kubernetes context alone does not provide an Argo CD server login.
+
+For a WSL application sending OTLP telemetry, forward the selected Collector:
+
+```bash
+kubectl -n opentelemetry port-forward service/otel-collector 4317:4317 4318:4318
+```
+
+Point the application's OTLP exporter at the appropriate localhost endpoint.
+The Collector, mesh, policy and delivery controllers remain in the cluster.
 
 ## Resources and cleanup
 

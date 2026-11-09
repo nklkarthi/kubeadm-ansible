@@ -9,8 +9,22 @@
   vars:
     controller_brew_binary: '{{ "/home/linuxbrew/.linuxbrew/bin/brew" if ansible_facts.system == "Linux" else ("/opt/homebrew/bin/brew" if ansible_facts.architecture in ["arm64", "aarch64"] else "/usr/local/bin/brew") }}'
     controller_required_tools: >-
-      {{ [{"formula": "helm", "command": "helm", "version": tool_versions.helm, "version_args": ["version", "--short"]},
+      {{ [{"formula": "kubernetes-cli", "command": "kubectl", "version": tool_versions.kubectl, "version_args": ["version", "--client", "--output=json"]},
+          {"formula": "helm", "command": "helm", "version": tool_versions.helm, "version_args": ["version", "--short"]},
           {"formula": "crane", "command": "crane", "version": tool_versions.crane, "version_args": ["version"]}]
+         + ([{"formula": "argocd", "command": "argocd", "version": tool_versions.argocd, "version_args": ["version", "--client", "--short"]},
+             {"formula": "kustomize", "command": "kustomize", "version": tool_versions.kustomize, "version_args": ["version"]}]
+            if 'argocd' in certification_addons | default([]) else [])
+         + ([{"formula": "argo", "command": "argo", "version": tool_versions.argo_workflows, "version_args": ["version", "--short"]}]
+            if 'workflows' in certification_addons | default([]) else [])
+         + ([{"formula": "argoproj/tap/kubectl-argo-rollouts", "command": "kubectl-argo-rollouts", "version": tool_versions.argo_rollouts_cli, "version_args": ["version", "--short"]}]
+            if 'rollouts' in certification_addons | default([]) else [])
+         + ([{"formula": "istioctl", "command": "istioctl", "version": tool_versions.istio, "version_args": ["version", "--remote=false"]}]
+            if 'istio' in certification_addons | default([]) else [])
+         + ([{"formula": "crossplane", "command": "crossplane", "version": tool_versions.crossplane_cli, "version_args": ["version", "--client"]}]
+            if 'crossplane' in certification_addons | default([]) else [])
+         + ([{"formula": "node@24", "command": "node", "version": tool_versions.node, "version_args": ["--version"]}]
+            if 'backstage' in certification_addons | default([]) else [])
          + ([{"formula": "kyverno", "command": "kyverno", "version": tool_versions.kyverno, "version_args": ["version"]}]
             if 'kyverno' in certification_addons | default([]) else [])
          + ([{"formula": "cilium-cli", "command": "cilium", "version": tool_versions.cilium_cli, "version_args": ["version", "--client"]},
@@ -30,6 +44,17 @@
       register: controller_brew_prefix
       changed_when: false
       check_mode: false
+    - name: Read configured taps when the Rollouts client is selected
+      ansible.builtin.command:
+        argv: ['{{ controller_brew_binary }}', tap]
+      register: controller_brew_taps
+      changed_when: false
+      when: "'rollouts' in certification_addons | default([])"
+    - name: Add the official Argo client tap when required
+      ansible.builtin.command:
+        argv: ['{{ controller_brew_binary }}', tap, argoproj/tap]
+      changed_when: true
+      when: "'rollouts' in certification_addons | default([]) and 'argoproj/tap' not in controller_brew_taps.stdout_lines"
     - name: Inspect only the packages required by this certification
       ansible.builtin.command:
         argv: ['{{ controller_brew_binary }}', list, --formula, --versions, '{{ item.formula }}']
@@ -48,6 +73,12 @@
         label: '{{ item.item.formula }}'
       when: item.rc == 1
       changed_when: true
+    - name: Expose the supported Node LTS commands for Backstage development
+      ansible.builtin.command:
+        argv: ['{{ controller_brew_binary }}', link, --force, node@24]
+      register: controller_node_links
+      changed_when: "controller_node_links.stdout is search('[1-9][0-9]* symlinks created')"
+      when: "'backstage' in certification_addons | default([])"
     - name: Verify package-managed tools match the tested release pins
       ansible.builtin.command:
         argv: '{{ [controller_brew_prefix.stdout ~ "/bin/" ~ item.command] + item.version_args }}'
@@ -56,13 +87,23 @@
         label: '{{ item.command }} {{ item.version }}'
       register: controller_package_version
       changed_when: false
-      failed_when: controller_package_version.stdout is not search('(?<![0-9])' ~ (item.version | regex_replace('^v', '') | regex_escape) ~ '(?![0-9])')
+      failed_when: controller_package_version.rc != 0 or controller_package_version.stdout is not search('(?<![0-9])' ~ (item.version | regex_replace('^v', '') | regex_escape) ~ '(?![0-9])')
+    - name: Require kubectl to be within one minor of the selected API server
+      ansible.builtin.assert:
+        that: (((tool_versions.kubectl | regex_replace('^v', '')).split('.')[1] | int) - ((k8s_version | default(tool_versions.kubernetes_minor) | regex_replace('^v', '')).split('.')[1] | int)) | abs <= 1
     - name: Select the verified package-managed binary paths
       ansible.builtin.set_fact:
         controller_binaries: '{{ controller_binaries | default({}) | combine({item.command: controller_brew_prefix.stdout ~ "/bin/" ~ item.command}) }}'
       loop: '{{ controller_required_tools }}'
       loop_control:
         label: '{{ item.command }}'
+    - name: Prepare the matching Backstage JavaScript package manager
+      ansible.builtin.include_tasks:
+        file: ../tasks/controller_javascript.yml
+        apply:
+          environment:
+            PATH: '{{ controller_brew_prefix.stdout }}/bin:{{ lookup("ansible.builtin.env", "PATH") }}'
+      when: "'backstage' in certification_addons | default([])"
     - name: Record that the selected controller tools are available
       ansible.builtin.set_fact:
         controller_tools_ready: true

@@ -35,6 +35,19 @@ python -m pip install -r requirements-dev.txt
 Ubuntu controllers need the matching `python3.14-venv` package for the standard
 `venv` command. Activate `.venv` before running validation or deployment.
 
+Certification profiles prepare their clients on the WSL or macOS controller.
+To prepare clients separately from VM creation, select the same profile:
+
+```bash
+ansible-playbook -i setup/inventory setup/hosts/controller_tools.yml \
+  -e @profiles/certifications/capa.yml
+```
+
+Homebrew manages the Kubernetes and project CLIs. Backstage development uses
+Homebrew's Node 24 and npm-managed Corepack to select Yarn. Clients are shared
+between disposable labs and verified against the release pins. See the
+[client selection table](docs/certifications.md#controller-clients).
+
 ## Repository layout
 
 - `setup/kube_cluster.yml`: base-cluster entry point.

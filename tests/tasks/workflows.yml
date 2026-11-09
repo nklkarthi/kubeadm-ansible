@@ -46,8 +46,8 @@
                   image: docker.io/library/busybox:1.37.0
                   command: [echo, workflow-prepared]
                   resources:
-                    requests: {cpu: 10m, memory: 8Mi}
-                    limits: {cpu: 100m, memory: 32Mi}
+                    requests: {cpu: 100m, memory: 128Mi}
+                    limits: {cpu: 500m, memory: 256Mi}
               - name: verify
                 inputs:
                   artifacts:
@@ -59,13 +59,18 @@
                   image: docker.io/library/busybox:1.37.0
                   command: [sh, -c, 'test "$(cat /tmp/message)" = workflow-artifact-ready && echo workflow-completed']
                   resources:
-                    requests: {cpu: 10m, memory: 8Mi}
-                    limits: {cpu: 100m, memory: 32Mi}
+                    requests: {cpu: 100m, memory: 128Mi}
+                    limits: {cpu: 500m, memory: 256Mi}
 - name: Require the workflow DAG to complete successfully
   ansible.builtin.command: kubectl wait workflow/training-dag -n {{ test_namespace }} --for=jsonpath={.status.phase}=Succeeded --timeout=240s
   changed_when: false
 - name: Read the workflow's recorded execution graph
-  ansible.builtin.command: kubectl get workflow training-dag -n {{ test_namespace }} -o json
+  ansible.builtin.command:
+    argv: ['{{ argo_binary | default("argo") }}', get, training-dag, --namespace, '{{ test_namespace }}', --output, json, --kubeconfig, '{{ controller_kubeconfig | default(repository_root ~ "/artifacts/kubeconfig") }}']
+  delegate_to: localhost
+  become: false
+  environment:
+    ARGO_SERVER: ''
   register: workflows_dag
   changed_when: false
 - name: Require both dependency-ordered task nodes to succeed
@@ -74,4 +79,4 @@
       - (workflows_dag.stdout | from_json).status.nodes.values() | selectattr('type', 'equalto', 'Pod') | selectattr('phase', 'equalto', 'Succeeded') | list | length == 2
 - name: Record verified workflow execution
   ansible.builtin.set_fact:
-    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Workflows executes a dependency-ordered DAG with a narrowly scoped executor identity", "workflow parameters are delivered as an input artifact and verified by the task"] }}'
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Workflows executes a dependency-ordered DAG with a narrowly scoped executor identity", "workflow parameters are delivered as an input artifact and verified by the task", "the controller-side Argo CLI reads the completed execution graph"] }}'
