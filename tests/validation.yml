@@ -1,0 +1,214 @@
+---
+- name: Validate manifest rendering and kubeconfig isolation using temporary files
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    addon_namespace: lab-argo
+    manifest_source_namespace: argocd
+    manifest_objects:
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: access
+        subjects:
+          - kind: ServiceAccount
+            name: server
+            namespace: argocd
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: server
+          namespace: argocd
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: example/server:1
+                  args:
+                    - --secure
+                    - --kubelet-insecure-tls
+                  env:
+                    - name: KEEP
+                      value: unchanged
+                    - name: POOL
+                      value: old
+              initContainers:
+                - name: init
+                  image: example/init:1
+                  env:
+                    - name: NODE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: spec.nodeName
+    manifest_patches:
+      - kind: Deployment
+        name: server
+        container_args:
+          server:
+            remove:
+              - --kubelet-insecure-tls
+            add:
+              - --secure
+        container_env:
+          server:
+            POOL: 10.244.0.0/16
+        container_resources:
+          server:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+    cloud_config:
+      apiVersion: v1
+      kind: Config
+      clusters:
+        - name: kubernetes
+          cluster:
+            server: https://cloud.example:6443
+            certificate-authority-data: Y2xvdWQtY2E=
+      users:
+        - name: kubernetes-admin
+          user:
+            token: test-cloud-token
+      contexts:
+        - name: cloud
+          context:
+            cluster: kubernetes
+            user: kubernetes-admin
+      current-context: cloud
+    lab_config:
+      apiVersion: v1
+      kind: Config
+      clusters:
+        - name: kubernetes
+          cluster:
+            server: https://192.168.101.32:6443
+            certificate-authority-data: bGFiLWNh
+      users:
+        - name: kubernetes-admin
+          user:
+            token: test-lab-token
+      contexts:
+        - name: lab
+          context:
+            cluster: kubernetes
+            user: kubernetes-admin
+      current-context: lab
+    repository_root: '{{ playbook_dir | dirname }}'
+  tasks:
+    - name: Render the shared template
+      ansible.builtin.set_fact:
+        rendered: '{{ lookup(''ansible.builtin.template'', playbook_dir ~ ''/../setup/templates/manifest-list.json.j2'')
+          | from_json }}'
+    - name: Check namespace, credential-independent fields and repeatable overrides
+      ansible.builtin.assert:
+        that:
+          - rendered['items'][0].subjects[0].namespace == addon_namespace
+          - rendered['items'][1].metadata.namespace == addon_namespace
+          - rendered['items'][1].spec.template.spec.containers[0].args == ['--secure']
+          - rendered['items'][1].spec.template.spec.containers[0].env[0].name == 'KEEP'
+          - rendered['items'][1].spec.template.spec.containers[0].env[1].value == '10.244.0.0/16'
+          - manifest_objects[1].metadata.namespace == 'argocd'
+          - rendered['items'][1].spec.template.spec.containers[0].resources.requests.cpu == '25m'
+          - rendered['items'][1].spec.template.spec.containers[0].image == 'example/server:1'
+          - rendered['items'][1].spec.template.spec.initContainers[0].env[0].valueFrom.fieldRef.apiVersion
+            == 'v1'
+    - name: Create an isolated test directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: kubeadm-validation-
+      register: test_directory
+    - name: Validate local credential merging without contacting a cluster
+      block:
+        - name: Write a dummy existing cloud kubeconfig
+          ansible.builtin.copy:
+            dest: '{{ test_directory.path }}/config'
+            content: '{{ cloud_config | to_nice_yaml }}'
+            mode: '0600'
+        - name: Write a dummy fetched lab kubeconfig
+          ansible.builtin.copy:
+            dest: '{{ test_directory.path }}/fetched'
+            content: '{{ lab_config | to_nice_yaml }}'
+            mode: '0600'
+        - name: Merge the lab context through the production task file
+          ansible.builtin.include_tasks: ../setup/tasks/install_local_kubeconfig.yml
+          vars:
+            local_kubeconfig: '{{ test_directory.path }}/config'
+            fetched_kubeconfig: '{{ test_directory.path }}/fetched'
+            local_kube_context: vbox-kubeadm
+        - name: Save the merged document
+          ansible.builtin.set_fact:
+            merged_document: '{{ lookup(''ansible.builtin.file'', test_directory.path ~ ''/config'') | from_yaml
+              }}'
+        - name: Verify cloud preservation and a separate active lab CA
+          ansible.builtin.assert:
+            that:
+              - merged_document.clusters[0] == cloud_config.clusters[0]
+              - merged_document.users[0] == cloud_config.users[0]
+              - merged_document.contexts[0] == cloud_config.contexts[0]
+              - merged_document['current-context'] == 'vbox-kubeadm'
+              - merged_document.clusters[1].name == 'vbox-kubeadm'
+              - merged_document.clusters[1].cluster['certificate-authority-data'] == 'bGFiLWNh'
+        - name: Repeat the same merge
+          ansible.builtin.include_tasks: ../setup/tasks/install_local_kubeconfig.yml
+          vars:
+            local_kubeconfig: '{{ test_directory.path }}/config'
+            fetched_kubeconfig: '{{ test_directory.path }}/fetched'
+            local_kube_context: vbox-kubeadm
+        - name: Require the repeat merge to make no change
+          ansible.builtin.assert:
+            that: not local_kubeconfig_result.changed
+        - name: Write a runtime fixture with unrelated imports and settings
+          ansible.builtin.copy:
+            dest: '{{ test_directory.path }}/containerd.toml'
+            mode: '0600'
+            content: |
+              version = 3
+              imports = ["/etc/containerd/custom.toml"]
+              disabled_plugins = ["cri", "custom.plugin"]
+              [debug]
+                level = "info"
+        - name: Configure the runtime fixture through production tasks
+          ansible.builtin.include_tasks: ../setup/tasks/containerd_config.yml
+          vars:
+            containerd_config_path: '{{ test_directory.path }}/containerd.toml'
+            containerd_dropin_dir: '{{ test_directory.path }}/conf.d'
+        - name: Read the configured runtime fixture
+          ansible.builtin.slurp:
+            src: '{{ test_directory.path }}/containerd.toml'
+          register: runtime_fixture
+        - name: Require preserved settings and enabled CRI
+          ansible.builtin.assert:
+            that:
+              - runtime_fixture.content | b64decode is search('/etc/containerd/custom.toml')
+              - runtime_fixture.content | b64decode is search('custom.plugin')
+              - runtime_fixture.content | b64decode is not search('\"cri\"')
+              - runtime_fixture.content | b64decode is search('level = \"info\"')
+        - name: Read the runtime configuration timestamp
+          ansible.builtin.stat:
+            path: '{{ test_directory.path }}/containerd.toml'
+          register: runtime_timestamp
+        - name: Repeat the runtime configuration
+          ansible.builtin.include_tasks: ../setup/tasks/containerd_config.yml
+          vars:
+            containerd_config_path: '{{ test_directory.path }}/containerd.toml'
+            containerd_dropin_dir: '{{ test_directory.path }}/conf.d'
+        - name: Read the repeated runtime configuration timestamp
+          ansible.builtin.stat:
+            path: '{{ test_directory.path }}/containerd.toml'
+          register: runtime_repeat_timestamp
+        - name: Require an unchanged runtime configuration on repeat
+          ansible.builtin.assert:
+            that: runtime_timestamp.stat.mtime == runtime_repeat_timestamp.stat.mtime
+      always:
+        - name: Remove only the temporary validation files
+          ansible.builtin.file:
+            path: '{{ test_directory.path }}'
+            state: absent
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.debug:
+        msg: Runtime changes are confined to the temporary fixture.

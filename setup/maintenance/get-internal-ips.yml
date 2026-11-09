@@ -1,0 +1,11 @@
+---
+- name: Report selected lab node addresses
+  hosts: '{{ cluster_hosts }}'
+  tasks:
+    - name: Show the node address and account
+      ansible.builtin.debug:
+        msg: '{{ inventory_hostname }}: node_ip={{ node_ip | default(ansible_facts.default_ipv4.address) }},
+          account={{ target_user | default(ansible_user) }}. Gitea, when installed here: http://{{ node_ip
+          | default(ansible_facts.default_ipv4.address) }}:{{ gitea_http_port | default(3000) }}/USERNAME/REPO.git'
+  vars_files:
+    - ../vars/common.yml

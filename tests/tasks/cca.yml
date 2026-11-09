@@ -1,0 +1,129 @@
+---
+- name: Verify service discovery and declarative workload behavior
+  ansible.builtin.include_tasks: kcna.yml
+- name: Create two labeled clients for the policy exercise
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  loop: [authorized, unauthorized]
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: '{{ item }}'
+        namespace: '{{ test_namespace }}'
+        labels:
+          role: '{{ item }}'
+      spec:
+        automountServiceAccountToken: false
+        containers:
+          - name: client
+            image: docker.io/library/busybox:1.37.0
+            command: [sleep, '3600']
+            resources:
+              requests: {cpu: 10m, memory: 8Mi}
+              limits: {cpu: 100m, memory: 32Mi}
+- name: Require both clients to be running before testing policy behavior
+  ansible.builtin.command: kubectl wait pod/{{ item }} -n {{ test_namespace }} --for=condition=Ready --timeout=120s
+  loop: [authorized, unauthorized]
+  changed_when: false
+- name: Verify baseline connectivity before introducing restrictions
+  ansible.builtin.command: kubectl exec {{ item }} -n {{ test_namespace }} -- wget -qO- -T 5 http://web
+  loop: [authorized, unauthorized]
+  changed_when: false
+- name: Restrict the web service to an authorized identity and HTTP path
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: web-access
+        namespace: '{{ test_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: certification-web
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  role: authorized
+            toPorts:
+              - ports:
+                  - port: '8080'
+                    protocol: TCP
+                rules:
+                  http:
+                    - method: GET
+                      path: /
+- name: Require the authorized identity to retain access
+  ansible.builtin.command: kubectl exec authorized -n {{ test_namespace }} -- wget -qO- -T 5 http://web
+  register: cilium_allowed
+  changed_when: false
+  until: cilium_allowed.rc == 0 and cilium_allowed.stdout | trim == 'cloud-native-lab'
+  retries: 12
+  delay: 3
+- name: Require the unapproved identity to lose access after policy realization
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - unauthorized
+      - -n
+      - '{{ test_namespace }}'
+      - --
+      - sh
+      - -c
+      - 'if wget -qO- -T 3 http://web >/dev/null 2>&1; then echo unexpectedly-allowed; exit 1; else echo identity-denied; fi'
+  register: cilium_identity_denied
+  changed_when: false
+  until: cilium_identity_denied.rc == 0 and cilium_identity_denied.stdout | trim == 'identity-denied'
+  retries: 12
+  delay: 3
+- name: Require explicit layer-seven denial for the forbidden HTTP path
+  ansible.builtin.command: kubectl exec authorized -n {{ test_namespace }} -- wget -S -O- -T 5 http://web/private
+  register: cilium_http_denied
+  changed_when: false
+  failed_when: false
+  until: cilium_http_denied.rc != 0 and '403' in cilium_http_denied.stderr
+  retries: 12
+  delay: 3
+- name: Verify the Cilium CLI reports a healthy cluster
+  ansible.builtin.command:
+    argv: ['{{ repository_root }}/.tools/bin/cilium', --kubeconfig, '{{ controller_kubeconfig }}', status, --wait, --wait-duration=3m]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+- name: Read Hubble flow events through a temporary local-only relay connection
+  ansible.builtin.shell: |
+    set -euo pipefail
+    log=$(mktemp)
+    forward=''
+    cleanup() {
+      if [ -n "$forward" ]; then kill "$forward" 2>/dev/null || true; wait "$forward" 2>/dev/null || true; fi
+      rm -f "$log"
+    }
+    trap cleanup EXIT
+    kubectl --kubeconfig {{ controller_kubeconfig | quote }} -n kube-system port-forward --address=127.0.0.1 service/hubble-relay :80 >"$log" 2>&1 &
+    forward=$!
+    for attempt in $(seq 1 30); do
+      port=$(sed -n 's/^Forwarding from 127.0.0.1:\([0-9]*\).*/\1/p' "$log" | head -n 1)
+      if [ -n "$port" ]; then break; fi
+      kill -0 "$forward"
+      sleep 1
+    done
+    test -n "$port"
+    {{ (repository_root ~ '/.tools/bin/hubble') | quote }} observe --server "127.0.0.1:$port" --last 100 --namespace {{ test_namespace | quote }} --output json
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: cilium_observed_flows
+  changed_when: false
+- name: Require observable flows from the test namespace
+  ansible.builtin.assert:
+    that:
+      - test_namespace in cilium_observed_flows.stdout
+      - cilium_observed_flows.stdout is search('"verdict"\s*:\s*"(DROPPED|FORWARDED)"')
+- name: Record the verified Cilium capabilities
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["Cilium identity policy preserves an approved client and denies another", "layer-seven HTTP policy returns an explicit 403 for the forbidden path", "Cilium reports cluster health", "Hubble returns actual flow events from the exercise namespace"] }}'

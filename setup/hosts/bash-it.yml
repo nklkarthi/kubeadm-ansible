@@ -1,0 +1,111 @@
+---
+- name: Install the pinned Bash-it shell framework
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars:
+    bash_it_user: '{{ target_user | default(ansible_user | default(''vboxuser'')) }}'
+    bash_it_dir: /home/{{ bash_it_user }}/.bash_it
+  tasks:
+    - name: Install Git and unprivileged-become ACL support
+      ansible.builtin.apt:
+        name:
+          - git
+          - acl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Check whether an existing Bash-it clone has full history
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - '{{ bash_it_dir }}'
+          - rev-parse
+          - --is-shallow-repository
+      register: bash_it_shallow
+      changed_when: false
+      failed_when: false
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Clone the reviewed Bash-it release
+      ansible.builtin.git:
+        repo: https://github.com/Bash-it/bash-it.git
+        dest: '{{ bash_it_dir }}'
+        version: '{{ bash_it_version | default(tool_versions.bash_it) }}'
+        update: true
+        depth: 1
+        single_branch: true
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Read the managed Git object size
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - '{{ bash_it_dir }}'
+          - count-objects
+          - -v
+      register: bash_it_objects
+      changed_when: false
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Limit history in a pre-existing Bash-it clone
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - '{{ bash_it_dir }}'
+          - fetch
+          - --depth=1
+          - --tags
+          - origin
+      when: '(bash_it_shallow.rc == 0 and bash_it_shallow.stdout == ''false'') or (bash_it_objects.stdout |
+        regex_findall(''(?m)^size-pack: ([0-9]+)'') | first | int > 10240)'
+      changed_when: true
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Discard obsolete reflogs in the managed shell framework
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - '{{ bash_it_dir }}'
+          - reflog
+          - expire
+          - --expire=now
+          - --all
+      when: '(bash_it_shallow.rc == 0 and bash_it_shallow.stdout == ''false'') or (bash_it_objects.stdout |
+        regex_findall(''(?m)^size-pack: ([0-9]+)'') | first | int > 10240)'
+      changed_when: true
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Compact the managed shell framework after limiting its history
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - '{{ bash_it_dir }}'
+          - gc
+          - --prune=now
+      when: '(bash_it_shallow.rc == 0 and bash_it_shallow.stdout == ''false'') or (bash_it_objects.stdout |
+        regex_findall(''(?m)^size-pack: ([0-9]+)'') | first | int > 10240)'
+      changed_when: true
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Install Bash-it once for the target account
+      ansible.builtin.command:
+        argv:
+          - '{{ bash_it_dir }}/install.sh'
+          - --silent
+        creates: /home/{{ bash_it_user }}/.bashrc.bak
+      become_user: '{{ bash_it_user }}'
+      become: true
+    - name: Set the shell theme
+      ansible.builtin.lineinfile:
+        path: /home/{{ bash_it_user }}/.bashrc
+        regexp: ^export BASH_IT_THEME=
+        line: export BASH_IT_THEME="powerline"
+      become_user: '{{ bash_it_user }}'
+      become: true
+  vars_files:
+    - ../vars/common.yml

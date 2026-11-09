@@ -1,0 +1,168 @@
+---
+- name: Create a small authenticated JetStream bus and a namespaced trigger identity
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: argoproj.io/v1alpha1
+          kind: EventBus
+          metadata: {name: default, namespace: '{{ test_namespace }}'}
+          spec:
+            jetstream:
+              version: '{{ tool_versions.nats_server }}'
+              replicas: 1
+              settings: |
+                max_memory_store: 16MB
+                max_file_store: 16MB
+              streamConfig: |
+                replicas: 1
+                maxBytes: 1048576
+                maxMsgs: 128
+                maxAge: 1h
+              containerTemplate:
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 250m, memory: 128Mi}
+              reloaderContainerTemplate:
+                resources:
+                  requests: {cpu: 2m, memory: 8Mi}
+                  limits: {cpu: 50m, memory: 32Mi}
+              metricsContainerTemplate:
+                resources:
+                  requests: {cpu: 2m, memory: 8Mi}
+                  limits: {cpu: 50m, memory: 32Mi}
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata: {name: event-trigger, namespace: '{{ test_namespace }}'}
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata: {name: event-trigger, namespace: '{{ test_namespace }}'}
+          rules:
+            - apiGroups: [batch]
+              resources: [jobs]
+              verbs: [create, get]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata: {name: event-trigger, namespace: '{{ test_namespace }}'}
+          roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: event-trigger}
+          subjects:
+            - {kind: ServiceAccount, name: event-trigger, namespace: '{{ test_namespace }}'}
+        - apiVersion: argoproj.io/v1alpha1
+          kind: EventSource
+          metadata: {name: webhook, namespace: '{{ test_namespace }}'}
+          spec:
+            service:
+              ports: [{port: 12000, targetPort: 12000}]
+            template:
+              container:
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 250m, memory: 128Mi}
+            webhook:
+              training: {port: '12000', endpoint: /training, method: POST}
+        - apiVersion: argoproj.io/v1alpha1
+          kind: Sensor
+          metadata: {name: trigger-job, namespace: '{{ test_namespace }}'}
+          spec:
+            template:
+              serviceAccountName: event-trigger
+              container:
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 250m, memory: 128Mi}
+            dependencies:
+              - name: training-event
+                eventSourceName: webhook
+                eventName: training
+            triggers:
+              - template:
+                  name: create-training-job
+                  k8s:
+                    operation: create
+                    source:
+                      resource:
+                        apiVersion: batch/v1
+                        kind: Job
+                        metadata: {name: event-job, namespace: '{{ test_namespace }}'}
+                        spec:
+                          backoffLimit: 0
+                          template:
+                            spec:
+                              restartPolicy: Never
+                              automountServiceAccountToken: false
+                              containers:
+                                - name: event
+                                  image: docker.io/library/busybox:1.37.0
+                                  command: [echo]
+                                  args: [waiting-for-event]
+                                  resources:
+                                    requests: {cpu: 10m, memory: 8Mi}
+                                    limits: {cpu: 100m, memory: 32Mi}
+                    parameters:
+                      - src: {dependencyName: training-event, dataKey: body.message}
+                        dest: spec.template.spec.containers.0.args.0
+- name: Wait for event bus configuration and event controllers
+  ansible.builtin.command: kubectl wait {{ item }} -n {{ test_namespace }} --for=condition={{ 'Configured' if item == 'eventbus/default' else 'Deployed' }} --timeout=240s
+  loop: [eventbus/default, eventsource/webhook, sensor/trigger-job]
+  changed_when: false
+- name: Read the event delivery deployments
+  ansible.builtin.command: kubectl get deployments -n {{ test_namespace }} -o json
+  register: events_deployments
+  changed_when: false
+- name: Select the deployments owned by the event source and sensor
+  ansible.builtin.set_fact:
+    events_owned_deployments: []
+- name: Collect the managed event deployment names
+  ansible.builtin.set_fact:
+    events_owned_deployments: '{{ events_owned_deployments + [item.metadata.name] }}'
+  loop: '{{ (events_deployments.stdout | from_json)["items"] }}'
+  loop_control:
+    label: '{{ item.metadata.name }}'
+  when: item.metadata.ownerReferences | default([]) | selectattr('kind', 'in', ['EventSource', 'Sensor']) | list | length > 0
+- name: Require both event processing deployments to exist
+  ansible.builtin.assert:
+    that: events_owned_deployments | length == 2
+- name: Wait for the event source and sensor to serve traffic
+  ansible.builtin.command: kubectl rollout status deployment/{{ item }} -n {{ test_namespace }} --timeout=180s
+  loop: '{{ events_owned_deployments }}'
+  changed_when: false
+- name: Deliver a webhook event through the cluster network
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - deployment/web
+      - -n
+      - '{{ test_namespace }}'
+      - --
+      - wget
+      - -T
+      - '5'
+      - -qO-
+      - '--header=Content-Type: application/json'
+      - '--post-data={"message":"CAPA-event-delivered"}'
+      - http://webhook-eventsource-svc:12000/training
+  register: events_webhook_response
+  changed_when: true
+  until: events_webhook_response.rc == 0
+  retries: 6
+  delay: 3
+- name: Require the event to create and complete its job
+  ansible.builtin.command: kubectl wait job/event-job -n {{ test_namespace }} --for=condition=Complete --timeout=180s
+  register: events_job_completion
+  changed_when: false
+  until: events_job_completion.rc == 0
+  retries: 6
+  delay: 3
+- name: Read the parameterized event job output
+  ansible.builtin.command: kubectl logs job/event-job -n {{ test_namespace }}
+  register: events_job_output
+  changed_when: false
+- name: Verify the webhook payload reached the triggered workload
+  ansible.builtin.assert:
+    that: events_job_output.stdout | trim == 'CAPA-event-delivered'
+- name: Record verified event delivery
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Events delivers a webhook over an authenticated JetStream bus", "a namespaced sensor creates a job and maps the event payload into its output"] }}'

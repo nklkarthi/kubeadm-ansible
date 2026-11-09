@@ -1,0 +1,62 @@
+---
+- name: Check whether this node has kubeadm installed
+  ansible.builtin.stat:
+    path: /usr/bin/kubeadm
+  register: reset_kubeadm_binary
+- name: Read installed service units before resetting a fresh guest
+  ansible.builtin.service_facts:
+- name: Run kubeadm reset and stop on failure
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - reset
+      - --force
+  changed_when: true
+  when: reset_kubeadm_binary.stat.exists
+- name: Stop kubelet after reset
+  ansible.builtin.systemd_service:
+    name: kubelet
+    state: stopped
+  when: "'kubelet.service' in ansible_facts.services"
+- name: Remove only the Kubernetes and CNI configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes
+    - /etc/cni/net.d
+- name: Read installed Kubernetes packages after the explicit reset
+  ansible.builtin.package_facts:
+    manager: apt
+- name: Allow a fresh minor selection only after the explicit certification reset
+  ansible.builtin.set_fact:
+    reset_switch_minor: "{{ reset_allow_minor_switch | default(false) | bool and 'kubeadm' in ansible_facts.packages and not (ansible_facts.packages.kubeadm[0].version
+      is match('^' ~ (k8s_version | default(tool_versions.kubernetes_minor) | regex_replace('^v', '') | regex_escape) ~ '\\.')) }}"
+- name: Release package holds before a fresh minor installation
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop:
+    - kubeadm
+    - kubelet
+    - kubectl
+  when:
+    - reset_switch_minor | bool
+    - item in ansible_facts.packages
+- name: Remove only old Kubernetes binaries before rebuilding another minor
+  ansible.builtin.apt:
+    name:
+      - kubeadm
+      - kubelet
+      - kubectl
+    state: absent
+    allow_change_held_packages: true
+  when: reset_switch_minor | bool
+- name: Optionally prune unused CRI images
+  ansible.builtin.command:
+    argv:
+      - crictl
+      - rmi
+      - --prune
+  changed_when: true
+  when: reset_prune_images | default(false) | bool

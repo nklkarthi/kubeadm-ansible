@@ -1,0 +1,9 @@
+---
+certification: cgoa
+k8s_version: v1.37
+cni_plugin: calico
+certification_addons:
+  - argocd
+download_via_controller: true
+controller_image_cache: true
+lab_time_from_controller: true

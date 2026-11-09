@@ -1,0 +1,11 @@
+---
+certification: cca
+k8s_version: v1.36
+cni_plugin: cilium
+cilium_cluster_name: home
+cilium_cluster_id: 1
+cilium_bgp_enabled: true
+certification_addons: []
+download_via_controller: true
+controller_image_cache: true
+lab_time_from_controller: true

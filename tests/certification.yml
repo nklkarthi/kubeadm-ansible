@@ -1,0 +1,62 @@
+---
+- name: Run the selected certification's functional lab checks
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../setup/vars/common.yml
+  tasks:
+    - name: Require an explicit supported certification
+      ansible.builtin.assert:
+        that:
+          - certification is defined
+          - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
+            'otca', 'kca', 'cnpa', 'cnpe', 'lfcs']
+    - name: Read the identity of the cluster under test
+      ansible.builtin.command: kubectl get namespace kube-system -o jsonpath={.metadata.uid}
+      register: certification_cluster_uid
+      changed_when: false
+    - name: Read the nodes and exact Kubernetes versions under test
+      ansible.builtin.command: kubectl get nodes -o json
+      register: certification_nodes
+      changed_when: false
+    - name: Choose an isolated test namespace
+      ansible.builtin.set_fact:
+        test_namespace: cert-{{ certification }}-{{ now(utc=true, fmt="%Y%m%d%H%M%S") }}
+    - name: Execute the selected certification checks
+      block:
+        - name: Create the test namespace
+          ansible.builtin.command: kubectl create namespace {{ test_namespace }}
+          register: certification_namespace_created
+          changed_when: true
+        - name: Execute the certification-specific checks
+          ansible.builtin.include_tasks: tasks/{{ certification }}.yml
+        - name: Create the private controller test-report directory
+          ansible.builtin.file:
+            path: '{{ repository_root }}/artifacts/certification-results'
+            state: directory
+            mode: '0700'
+          delegate_to: localhost
+          become: false
+      always:
+        - name: Remove only this test's namespace
+          ansible.builtin.command: kubectl delete namespace {{ test_namespace }} --wait=true --timeout=120s
+          when: certification_namespace_created is defined and certification_namespace_created is succeeded
+          changed_when: true
+    - name: Save the completed functional checks
+      ansible.builtin.copy:
+        dest: '{{ repository_root }}/artifacts/certification-results/{{ certification }}.json'
+        mode: '0600'
+        content: '{{ {''certification'': certification, ''status'': ''passed'', ''verified_at_utc'': now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
+          ''cluster_uid'': certification_cluster_uid.stdout,
+          ''nodes'': (certification_nodes.stdout | from_json)["items"] | map(attribute="metadata.name") | list,
+          ''kubernetes_versions'': (certification_nodes.stdout | from_json)["items"] | map(attribute="status.nodeInfo.kubeletVersion") | unique | list,
+          ''scope'': ''automated lab
+          checks'', ''checks'': certification_completed_checks, ''manual_study_topics'': manual_study_topics
+          | default([])} | to_nice_json }}'
+      delegate_to: localhost
+      become: false
+  gather_subset:
+    - min
+    - network

@@ -1,0 +1,48 @@
+---
+- name: Install the Gateway API CRDs supported by the ingress controller
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: default
+    manifest_name: gateway-api-{{ tool_versions.gateway_api }}
+    manifest_checksum: sha256:356c2b8e286a964dc20995435659ad1095386329974793af10bbfe3eff977fe5
+    manifest_url: https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ tool_versions.gateway_api
+      }}/standard-install.yaml
+- name: Install the pinned ingress and Gateway API controller
+  ansible.builtin.include_tasks: ../helm_release.yml
+  vars:
+    helm_release_name: traefik
+    helm_namespace: traefik
+    helm_chart_name: traefik
+    helm_chart_version: '{{ tool_versions.traefik_chart }}'
+    helm_chart_source: '{{ helm_chart_sources.traefik }}'
+    helm_values:
+      providers:
+        kubernetesIngress:
+          enabled: true
+        kubernetesGateway:
+          enabled: true
+      service:
+        spec:
+          type: NodePort
+      ports:
+        web:
+          nodePort: '{{ lab_nodeports.traefik_http | int }}'
+        websecure:
+          nodePort: '{{ lab_nodeports.traefik_https | int }}'
+      gateway:
+        listeners:
+          web:
+            port: 8000
+            protocol: HTTP
+            namespacePolicy:
+              from: All
+        name: certification-gateway
+      resources:
+        requests:
+          cpu: 25m
+          memory: 48Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      gatewayClass:
+        name: certification-gateway

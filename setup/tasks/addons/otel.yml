@@ -1,0 +1,69 @@
+---
+- name: Install the selected OpenTelemetry Collector
+  ansible.builtin.include_tasks: ../helm_release.yml
+  vars:
+    helm_release_name: otel
+    helm_namespace: opentelemetry
+    helm_chart_name: opentelemetry-collector
+    helm_chart_version: '{{ tool_versions.otel_chart }}'
+    helm_chart_source: '{{ helm_chart_sources.otel }}'
+    helm_values:
+      mode: deployment
+      fullnameOverride: otel-collector
+      image:
+        repository: otel/opentelemetry-collector-contrib
+        tag: '{{ tool_versions.otel_collector }}'
+      command:
+        name: otelcol-contrib
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      ports:
+        jaeger-compact:
+          enabled: false
+        jaeger-thrift:
+          enabled: false
+        jaeger-grpc:
+          enabled: false
+        zipkin:
+          enabled: false
+      alternateConfig:
+        extensions:
+          health_check:
+            endpoint: 0.0.0.0:13133
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+              http:
+                endpoint: 0.0.0.0:4318
+        processors:
+          memory_limiter:
+            check_interval: 1s
+            limit_mib: 192
+            spike_limit_mib: 32
+          batch:
+            timeout: 1s
+        exporters:
+          debug:
+            verbosity: detailed
+        service:
+          extensions: [health_check]
+          pipelines:
+            traces:
+              receivers: [otlp]
+              processors: [memory_limiter, batch]
+              exporters: [debug]
+            metrics:
+              receivers: [otlp]
+              processors: [memory_limiter, batch]
+              exporters: [debug]
+            logs:
+              receivers: [otlp]
+              processors: [memory_limiter, batch]
+              exporters: [debug]

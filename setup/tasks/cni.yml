@@ -1,0 +1,145 @@
+---
+- name: Run cluster_access.yml
+  ansible.builtin.import_tasks: cluster_access.yml
+  vars:
+    tool_name: '{{ cni }}'
+    tool_kubernetes_min: '{{ ''1.33.0'' if cni == ''cilium'' else ''1.35.0'' }}'
+    tool_kubernetes_max: '{{ ''1.37.0'' if cni == ''cilium'' else ''1.38.0'' }}'
+  tags:
+    - compatibility
+- name: Read installed network DaemonSets
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - daemonsets
+      - --all-namespaces
+      - -o
+      - json
+  changed_when: false
+  register: cni_daemonsets
+  check_mode: false
+  tags:
+    - compatibility
+- name: Record installed network providers
+  ansible.builtin.set_fact:
+    installed_cnis: '{{ (cni_daemonsets.stdout | from_json)[''items''] | map(attribute=''metadata.name'') |
+      intersect([''calico-node'', ''cilium'']) }}'
+  tags:
+    - compatibility
+- name: Reject an in-place switch between network providers
+  ansible.builtin.assert:
+    that:
+      - cni in ['calico', 'cilium']
+      - installed_cnis | difference(['calico-node'] if cni == 'calico' else ['cilium']) | length == 0
+      - (cni == 'calico' and calico_version is match('^v3\.33\.')) or (cni == 'cilium' and cilium_version is
+        match('^1\.20\.'))
+    fail_msg: Another CNI is already installed. This playbook does not migrate or stack CNIs.
+  tags:
+    - compatibility
+- name: Configure Calico
+  when: cni == 'calico'
+  block:
+    - name: Read existing Calico pool configuration
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - ippools.crd.projectcalico.org
+          - -o
+          - json
+      register: calico_existing_pools
+      changed_when: false
+      check_mode: false
+      when: '''calico-node'' in installed_cnis'
+    - name: Reject an implicit migration of an existing Calico IPv4 pool
+      ansible.builtin.assert:
+        that: (pod_network_cidr | default('10.244.0.0/16')) in ((calico_existing_pools.stdout | from_json)['items']
+          | map(attribute='spec.cidr') | list)
+        fail_msg: Existing Calico pools differ from pod_network_cidr; change them through an explicit migration
+          or rebuild.
+      when: '''calico-node'' in installed_cnis'
+    - name: Render and apply the selected Calico network
+      ansible.builtin.import_tasks: download_apply.yml
+      vars:
+        addon_namespace: kube-system
+        manifest_url: https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+        manifest_name: calico-{{ calico_version }}
+        manifest_patches:
+          - kind: DaemonSet
+            name: calico-node
+            container_env:
+              calico-node:
+                CALICO_IPV4POOL_CIDR: '{{ pod_network_cidr | default(''10.244.0.0/16'') }}'
+                IP_AUTODETECTION_METHOD: kubernetes-internal-ip
+- name: Configure Cilium with the pinned chart and selected lab features
+  when: cni == 'cilium'
+  ansible.builtin.include_tasks: helm_release.yml
+  vars:
+    helm_release_name: cilium
+    helm_namespace: kube-system
+    helm_chart_name: cilium
+    helm_chart_version: '{{ cilium_version }}'
+    helm_chart_source: '{{ helm_chart_sources.cilium }}'
+    helm_values:
+      kubeProxyReplacement: false
+      ipam:
+        mode: kubernetes
+      cluster:
+        name: '{{ cilium_cluster_name | default("home") }}'
+        id: '{{ cilium_cluster_id | default(1) | int }}'
+      operator:
+        replicas: 1
+        resources:
+          requests: {cpu: 25m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: '1', memory: 1Gi}
+      envoy:
+        resources:
+          requests: {cpu: 25m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+      hubble:
+        enabled: true
+        relay:
+          enabled: true
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+      bgpControlPlane:
+        enabled: '{{ cilium_bgp_enabled | default(false) | bool }}'
+- name: Collect nodes whose kubelet cgroup driver changed
+  ansible.builtin.set_fact:
+    cgroup_refreshed_nodes: []
+- name: Record nodes requiring fresh network pod sandboxes
+  ansible.builtin.set_fact:
+    cgroup_refreshed_nodes: '{{ cgroup_refreshed_nodes + [item] }}'
+  loop: '{{ groups[cluster_hosts] }}'
+  when: hostvars[item].kubelet_cgroup_updated | default(false) | bool
+- name: Recreate network pods after an explicit or detected cgroup-driver migration
+  when: refresh_network_pods | default(false) | bool or cgroup_refreshed_nodes | length > 0
+  block:
+    - name: Create fresh network pod sandboxes with the active driver
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - restart
+          - daemonset/{{ item }}
+          - -n
+          - kube-system
+      loop: '{{ [''kube-proxy'', ''cilium'' if cni == ''cilium'' else ''calico-node''] }}'
+      changed_when: true
+    - name: Wait for the refreshed network DaemonSets
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - daemonset/{{ item }}
+          - -n
+          - kube-system
+          - --timeout=300s
+      loop: '{{ [''kube-proxy'', ''cilium'' if cni == ''cilium'' else ''calico-node''] }}'
+      changed_when: false

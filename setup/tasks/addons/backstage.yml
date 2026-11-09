@@ -1,0 +1,121 @@
+---
+- name: Prepare the Backstage namespace
+  ansible.builtin.include_tasks: ../namespace.yml
+  vars:
+    addon_namespace: backstage
+- name: Provide a local catalog and a credential-free software template
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: backstage-practice-catalog
+        namespace: backstage
+      data:
+        catalog.yaml: |
+          apiVersion: backstage.io/v1alpha1
+          kind: Group
+          metadata:
+            name: platform
+          spec:
+            type: team
+            children: []
+          ---
+          apiVersion: backstage.io/v1alpha1
+          kind: System
+          metadata:
+            name: practice-platform
+          spec:
+            owner: group:default/platform
+          ---
+          apiVersion: backstage.io/v1alpha1
+          kind: Component
+          metadata:
+            name: practice-service
+            description: Catalog ownership and lifecycle practice
+          spec:
+            type: service
+            lifecycle: experimental
+            owner: group:default/platform
+            system: practice-platform
+          ---
+          apiVersion: scaffolder.backstage.io/v1beta3
+          kind: Template
+          metadata:
+            name: practice-service
+            title: Practice service request
+          spec:
+            owner: group:default/platform
+            type: service
+            parameters:
+              - title: Service details
+                required: [name]
+                properties:
+                  name:
+                    title: Service name
+                    type: string
+            steps:
+              - id: request
+                name: Record the service request
+                action: debug:log
+                input:
+                  message: 'Requested service: ${{ "{{ parameters.name }}" }}'
+- name: Install the official Backstage demonstration application
+  ansible.builtin.include_tasks: ../helm_release.yml
+  vars:
+    helm_release_name: backstage
+    helm_namespace: backstage
+    helm_chart_name: backstage
+    helm_chart_version: '{{ tool_versions.backstage_chart }}'
+    helm_chart_source: '{{ helm_chart_sources.backstage }}'
+    helm_values:
+      backstage:
+        extraVolumes:
+          - name: practice-catalog
+            configMap:
+              name: backstage-practice-catalog
+        extraVolumeMounts:
+          - name: practice-catalog
+            mountPath: /etc/backstage-practice
+            readOnly: true
+        image:
+          registry: ghcr.io
+          repository: backstage/backstage
+          tag: '{{ tool_versions.backstage }}'
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+        appConfig:
+          app:
+            title: Certification Lab
+            baseUrl: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}'
+          backend:
+            baseUrl: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}'
+            listen:
+              port: 7007
+            cors:
+              origin: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}'
+            database:
+              client: better-sqlite3
+              connection: ':memory:'
+          auth:
+            providers:
+              guest:
+                dangerouslyAllowOutsideDevelopment: true
+          catalog:
+            rules:
+              - allow: [Component, System, API, Resource, Location, Group, User, Template]
+            locations:
+              - type: file
+                target: /etc/backstage-practice/catalog.yaml
+      service:
+        type: NodePort
+        nodePorts:
+          backend: '{{ lab_nodeports.backstage | int }}'
+      postgresql:
+        enabled: false

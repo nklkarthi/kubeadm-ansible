@@ -1,0 +1,89 @@
+---
+- name: Install explicitly selected certification tools
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    metrics_version: '{{ metrics_server_release | default(tool_versions.metrics_server) }}'
+    bench_release: '{{ bench_version | default(tool_versions.kube_bench) }}'
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Install metrics-server
+      when: install_metrics_server | default(false) | bool
+      block:
+        - name: Reconcile metrics-server with the explicitly selected TLS behavior
+          ansible.builtin.import_tasks: ../tasks/download_apply.yml
+          vars:
+            addon_namespace: kube-system
+            manifest_url: https://github.com/kubernetes-sigs/metrics-server/releases/download/{{ metrics_version
+              }}/components.yaml
+            manifest_name: metrics-server-{{ metrics_version }}
+            manifest_patches:
+              - kind: Deployment
+                name: metrics-server
+                container_args:
+                  metrics-server:
+                    remove:
+                      - --kubelet-insecure-tls
+                      - --kubelet-certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                    add: '{{ [''--kubelet-insecure-tls''] if metrics_server_insecure_tls | default(false) |
+                      bool else [''--kubelet-certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'']
+                      }}'
+        - name: Wait for deployment/metrics-server
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - rollout
+              - status
+              - deployment/metrics-server
+              - -n
+              - kube-system
+              - --timeout=300s
+          changed_when: false
+        - name: Wait for the metrics API to be available
+          ansible.builtin.command: kubectl wait apiservice/v1beta1.metrics.k8s.io --for=condition=Available
+            --timeout=180s
+          changed_when: false
+    - name: Install kube-bench without running an assumed CIS benchmark
+      when: install_kube_bench | default(false) | bool
+      block:
+        - name: Read installed assessment-tool packages
+          ansible.builtin.package_facts:
+            manager: apt
+        - name: Install only when the pinned kube-bench release is missing
+          when: '''kube-bench'' not in ansible_facts.packages or ansible_facts.packages[''kube-bench''][0].version
+            is not match(''^'' ~ (bench_release | regex_replace(''^v'', '''') | regex_escape) ~ ''(?:-|$)'')'
+          block:
+            - name: Create the checked binary cache directory
+              ansible.builtin.file:
+                path: /var/cache/kubeadm-ansible
+                state: directory
+                mode: '0755'
+            - name: Download and verify the matching kube-bench package
+              ansible.builtin.include_tasks: ../tasks/download_file.yml
+              vars:
+                download_spec:
+                  url: https://github.com/aquasecurity/kube-bench/releases/download/{{ bench_release }}/kube-bench_{{
+                    bench_release | regex_replace("^v", "") }}_linux_{{ "amd64" if ansible_facts.architecture
+                    == "x86_64" else "arm64" }}.deb
+                  checksum: sha256:https://github.com/aquasecurity/kube-bench/releases/download/{{ bench_release
+                    }}/kube-bench_{{ bench_release | regex_replace("^v", "") }}_checksums.txt
+                  dest: /var/cache/kubeadm-ansible/kube-bench_{{ bench_release | regex_replace("^v", "") }}_linux_{{
+                    "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}.deb
+                  mode: '0644'
+            - name: Install the checked kube-bench package
+              ansible.builtin.apt:
+                deb: /var/cache/kubeadm-ansible/kube-bench_{{ bench_release | regex_replace("^v", "") }}_linux_{{
+                  "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}.deb
+                state: present
+        - name: Remove the assessment-tool installer after successful installation
+          ansible.builtin.file:
+            path: /var/cache/kubeadm-ansible/kube-bench_{{ bench_release | regex_replace("^v", "") }}_linux_{{
+              "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}.deb
+            state: absent
+  vars_files:
+    - ../vars/common.yml

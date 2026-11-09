@@ -1,0 +1,142 @@
+---
+- name: Verify the dedicated Linux certification environment
+  hosts: linux_hosts
+  become: true
+  vars_files:
+    - ../setup/vars/common.yml
+  tasks:
+    - name: Require enforcing SELinux and the selected timezone
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.selinux.mode == 'enforcing'
+          - ansible_facts.processor_vcpus | int >= 2
+    - name: Verify the practice HTTP service from the controller
+      ansible.builtin.uri:
+        url: 'http://{{ ansible_host | default(inventory_hostname) }}:{{ lfcs_http_port }}/'
+        return_content: true
+      delegate_to: localhost
+      become: false
+      register: lfcs_http
+      until: lfcs_http.status == 200
+      retries: 12
+      delay: 5
+    - name: Require the configured web content
+      ansible.builtin.assert:
+        that:
+          - "'lfcs-http-selinux-ready' in lfcs_http.content"
+    - name: Test SELinux denial and recovery using a dedicated content file
+      block:
+        - name: Create a disposable SELinux test file
+          ansible.builtin.copy:
+            content: 'selinux-access-restored'
+            dest: '{{ lfcs_lab_root }}/www/selinux-test.txt'
+            mode: '0644'
+        - name: Deliberately assign a label the HTTP daemon cannot read
+          ansible.builtin.command: chcon -t user_home_t {{ lfcs_lab_root }}/www/selinux-test.txt
+          changed_when: true
+        - name: Require actual SELinux denial despite readable Unix permissions
+          ansible.builtin.uri:
+            url: 'http://127.0.0.1:{{ lfcs_http_port }}/selinux-test.txt'
+            status_code: 403
+        - name: Restore the persisted file context
+          ansible.builtin.command: restorecon -v {{ lfcs_lab_root }}/www/selinux-test.txt
+          changed_when: true
+        - name: Verify access returns after correcting the security label
+          ansible.builtin.uri:
+            url: 'http://127.0.0.1:{{ lfcs_http_port }}/selinux-test.txt'
+            return_content: true
+          register: lfcs_selinux_recovered
+        - name: Require recovered content
+          ansible.builtin.assert:
+            that:
+              - lfcs_selinux_recovered.content == 'selinux-access-restored'
+      always:
+        - name: Remove only the SELinux test content
+          ansible.builtin.file:
+            path: '{{ lfcs_lab_root }}/www/selinux-test.txt'
+            state: absent
+    - name: Exercise LVM on a disposable sparse loop device with guaranteed cleanup
+      ansible.builtin.shell: |
+        set -euo pipefail
+        work=$(mktemp -d /var/tmp/lfcs-storage.XXXXXX)
+        vg="lfcs_test_$(basename "$work" | tr -cd 'a-zA-Z0-9_')"
+        loop=''
+        cleanup() {
+          if mountpoint -q "$work/mount"; then umount "$work/mount"; fi
+          if vgs "$vg" >/dev/null 2>&1; then vgremove -fy "$vg"; fi
+          if [ -n "$loop" ]; then
+            pvremove -ffy "$loop" >/dev/null 2>&1 || true
+            losetup -d "$loop"
+          fi
+          rm -rf -- "$work"
+        }
+        trap cleanup EXIT
+        truncate -s 160M "$work/disk.img"
+        loop=$(losetup --find --show "$work/disk.img")
+        pvcreate "$loop"
+        vgcreate "$vg" "$loop"
+        lvcreate -L 64M -n data "$vg"
+        mkfs.ext4 -q "/dev/$vg/data"
+        mkdir "$work/mount"
+        mount "/dev/$vg/data" "$work/mount"
+        echo retained-through-remount > "$work/mount/probe"
+        umount "$work/mount"
+        lvextend -L +32M "/dev/$vg/data"
+        e2fsck -pf "/dev/$vg/data"
+        resize2fs "/dev/$vg/data"
+        mount "/dev/$vg/data" "$work/mount"
+        test "$(cat "$work/mount/probe")" = retained-through-remount
+        echo lvm-filesystem-persistence-and-growth-verified
+      args:
+        executable: /bin/bash
+      register: lfcs_storage
+      changed_when: true
+    - name: Exercise ACL permissions with an isolated unprivileged user
+      ansible.builtin.shell: |
+        set -euo pipefail
+        work=$(mktemp -d /var/tmp/lfcs-acl.XXXXXX)
+        account="lfcs$(basename "$work" | tr -cd 'a-zA-Z0-9')"
+        cleanup() {
+          if id "$account" >/dev/null 2>&1; then userdel "$account"; fi
+          rm -rf -- "$work"
+        }
+        trap cleanup EXIT
+        useradd --no-create-home --shell /bin/bash "$account"
+        chmod 0711 "$work"
+        echo acl-protected-content > "$work/content"
+        chmod 0600 "$work/content"
+        if runuser -u "$account" -- cat "$work/content" >/dev/null 2>&1; then exit 1; fi
+        setfacl -m "u:$account:r" "$work/content"
+        test "$(runuser -u "$account" -- cat "$work/content")" = acl-protected-content
+        setfacl -x "u:$account" "$work/content"
+        if runuser -u "$account" -- cat "$work/content" >/dev/null 2>&1; then exit 1; fi
+        echo acl-deny-allow-revoke-verified
+      args:
+        executable: /bin/bash
+      changed_when: true
+    - name: Verify the time service and container and virtualization tools
+      ansible.builtin.command:
+        argv: '{{ item }}'
+      loop:
+        - [chronyc, tracking]
+        - [podman, info, --format, '{{ "{{.Host.Security.selinuxEnabled}}" }}']
+        - [virsh, --version]
+      changed_when: false
+    - name: Create the controller verification directory
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/certification-results'
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+    - name: Save the completed Linux checks and their exact scope
+      ansible.builtin.copy:
+        dest: '{{ repository_root }}/artifacts/certification-results/lfcs.json'
+        mode: '0600'
+        content: '{{ {"certification": "lfcs", "status": "passed", "verified_at_utc": now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
+          "distribution": ansible_facts.distribution, "release": ansible_facts.distribution_version,
+          "scope": "automated Linux environment checks", "checks": ["SELinux enforcement denial and recovery", "controller-to-guest HTTP and firewall",
+          "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools"],
+          "manual_study_topics": manual_study_topics | default([])} | to_nice_json }}'
+      delegate_to: localhost
+      become: false

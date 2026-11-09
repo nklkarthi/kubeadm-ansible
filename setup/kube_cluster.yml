@@ -1,12 +1,44 @@
 ---
+- name: Validate the selected lab inventory
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/common.yml
+  tasks:
+    - name: Require a complete partition of the selected nodes into supported roles
+      ansible.builtin.assert:
+        that:
+          - groups[cluster_hosts] | length > 0
+          - groups[control_plane_hosts] | length >= 1
+          - groups[worker_hosts] | length > 0 or (allow_single_node | default(false) | bool and groups[cluster_hosts] | length == 1 and groups[control_plane_hosts] | length == 1)
+          - groups[control_plane_hosts] | length == 1 or control_plane_endpoint | default('') | length > 0
+          - groups[control_plane_hosts] | intersect(groups[worker_hosts]) | length == 0
+          - groups[control_plane_hosts] | union(groups[worker_hosts]) | difference(groups[cluster_hosts]) |
+            length == 0
+          - groups[cluster_hosts] | difference(groups[control_plane_hosts] | union(groups[worker_hosts])) | length == 0
+        fail_msg: Select complete node roles; multiple control planes require a reachable control_plane_endpoint. A standalone node requires allow_single_node=true.
+- name: Prepare controller tools only when the selected setup needs them
+  import_playbook: hosts/controller_tools.yml
+  when: (cni_plugin | default('calico') == 'cilium' or controller_image_cache | default(false) | bool) and
+    not hostvars.localhost.controller_tools_ready | default(false) | bool
 - name: Setup Kubernetes Cluster
-  import_playbook: firewall.yml
-
+  import_playbook: hosts/firewall.yml
 - name: Install Kubernetes Dependencies
-  import_playbook: kube_dependencies.yml
-
+  import_playbook: cluster/kube_dependencies.yml
 - name: Configure Master Node
-  import_playbook: kube_master.yml
-
+  import_playbook: cluster/kube_master.yml
 - name: Configure Worker Nodes
-  import_playbook: kube_workers.yml
+  import_playbook: cluster/kube_workers.yml
+- name: Issue verified serving certificates for the selected kubelets
+  import_playbook: cluster/kubelet_certificates.yml
+- name: Verify the functional base cluster
+  import_playbook: cluster/verify_cluster.yml
+  when: cni_plugin | default('calico') != 'none'
+- name: Test DNS and cross-worker services after fresh bootstrap or when requested
+  import_playbook: ../tests/cluster_network.yml
+  when: >-
+    groups[worker_hosts] | length >= 2 and
+    (verify_network | default(false) | bool or
+    hostvars[groups[control_plane_hosts][0]].kubeadm_initialized.changed | default(false) | bool or
+    groups[worker_hosts] | map('extract', hostvars, ['worker_config', 'stat', 'exists']) |
+    select('equalto', false) | list | length > 0)

@@ -1,0 +1,30 @@
+---
+- name: Compare the declared Kubernetes resource
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - diff
+      - --server-side
+      - --field-manager=kubeadm-ansible
+      - -f
+      - "-"
+    stdin: "{{ manifest_definition | to_json }}"
+  register: manifest_diff
+  changed_when: false
+  failed_when: manifest_diff.rc not in [0, 1]
+  no_log: "{{ manifest_private | default(false) | bool }}"
+- name: Apply a changed Kubernetes resource
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - --server-side
+      - --field-manager=kubeadm-ansible
+      - -f
+      - "-"
+    stdin: "{{ manifest_definition | to_json }}"
+  when: manifest_diff.rc == 1
+  changed_when: true
+  no_log: "{{ manifest_private | default(false) | bool }}"
+- name: Prepare only images requested by the applied resources
+  ansible.builtin.include_tasks: preload_pod_images.yml

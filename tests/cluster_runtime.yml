@@ -1,0 +1,53 @@
+---
+- name: Verify legacy containerd migration without changing the running runtime
+  hosts: '{{ control_plane_hosts }}'
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../setup/vars/common.yml
+  tasks:
+    - name: Create a private fixture directory on the guest
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: containerd-validation-
+      register: runtime_test_directory
+    - name: Validate migration with the installed containerd binary
+      block:
+        - name: Write a legacy fixture with unrelated settings
+          ansible.builtin.copy:
+            dest: '{{ runtime_test_directory.path }}/config.toml'
+            mode: '0600'
+            content: |
+              disabled_plugins = []
+              [debug]
+                level = "debug"
+        - name: Migrate and configure the fixture through production tasks
+          ansible.builtin.include_tasks: ../setup/tasks/containerd_config.yml
+          vars:
+            containerd_config_path: '{{ runtime_test_directory.path }}/config.toml'
+            containerd_dropin_dir: '{{ runtime_test_directory.path }}/conf.d'
+        - name: Validate and read the merged fixture with containerd
+          ansible.builtin.command:
+            argv:
+              - containerd
+              - --config
+              - '{{ runtime_test_directory.path }}/config.toml'
+              - config
+              - dump
+          register: runtime_test_result
+          changed_when: false
+        - name: Require a supported schema, preserved settings, and systemd cgroups
+          ansible.builtin.assert:
+            that:
+              - runtime_test_result.stdout is search('(?m)^version\s*=\s*[34]')
+              - runtime_test_result.stdout is search('(?m)^\s*level\s*=\s*[^A-Za-z]*debug[^A-Za-z]')
+              - runtime_test_result.stdout is search('SystemdCgroup\s*=\s*true')
+      always:
+        - name: Remove only the temporary runtime fixture
+          ansible.builtin.file:
+            path: '{{ runtime_test_directory.path }}'
+            state: absent
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.debug:
+        msg: Runtime changes were confined to the temporary fixture; the running service was not changed.

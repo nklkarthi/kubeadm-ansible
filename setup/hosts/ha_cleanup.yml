@@ -1,0 +1,56 @@
+---
+- name: Require the disposable high availability inventory before cleanup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Limit cleanup to the two disposable control planes
+      ansible.builtin.assert:
+        that:
+          - groups[control_plane_hosts] | length == 3
+          - groups['ha_load_balancer'] | default([]) | length == 1
+          - groups[control_plane_hosts] | map('extract', hostvars, 'vagrant_name') | list == ['master', 'ha-01', 'ha-02']
+- name: Reset cluster membership while all three etcd members are available
+  import_playbook: ../maintenance/kube_reset.yml
+- name: Remove the lab API proxy from the retained worker
+  hosts: ha_load_balancer
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Inspect the proxy configuration before removing it
+      ansible.builtin.stat:
+        path: /etc/haproxy/haproxy.cfg
+      register: ha_proxy_config
+    - name: Remove only the API proxy configured by this lab
+      when: ha_proxy_config.stat.exists
+      block:
+        - name: Read the lab proxy configuration
+          ansible.builtin.slurp:
+            src: /etc/haproxy/haproxy.cfg
+          register: ha_proxy_content
+        - name: Require the lab's API frontend and control-plane backend
+          ansible.builtin.assert:
+            that:
+              - "'frontend kubernetes_api' in (ha_proxy_content.content | b64decode)"
+              - "'default_backend control_planes' in (ha_proxy_content.content | b64decode)"
+        - name: Stop the unused API proxy
+          ansible.builtin.systemd_service:
+            name: haproxy
+            state: stopped
+            enabled: false
+        - name: Remove the unused proxy package and configuration
+          ansible.builtin.apt:
+            name: haproxy
+            state: absent
+            purge: true
+        - name: Remove the disposable API endpoint's firewall rule
+          ansible.builtin.command: ufw --force delete allow 8443/tcp
+          register: ha_proxy_firewall_removed
+          changed_when: "'Rule deleted' in ha_proxy_firewall_removed.stdout"
+- name: Delete only the two disposable high availability VMs and their disks
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_state: absent
+    vagrant_nodes: [ha-01, ha-02]

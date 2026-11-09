@@ -1,0 +1,88 @@
+---
+- name: Require a three-control-plane quorum exercise
+  ansible.builtin.assert:
+    that:
+      - groups[control_plane_hosts] | length == 3
+      - control_plane_endpoint is defined
+- name: Create a private temporary directory outside the static-pod watch directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: kubeadm-ha-check-
+  register: ha_manifest_backup
+- name: Verify API and etcd writes while the primary components are stopped
+  block:
+    - name: Temporarily withdraw only the primary API server and etcd manifests
+      ansible.builtin.command:
+        argv: [mv, '/etc/kubernetes/manifests/{{ item }}.yaml', '{{ ha_manifest_backup.path }}/{{ item }}.yaml']
+      loop: [kube-apiserver, etcd]
+      changed_when: true
+    - name: Wait for the primary components to actually stop listening
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: '{{ item }}'
+        state: stopped
+        timeout: 120
+      loop: [6443, 2379]
+    - name: Require the remaining API servers to serve the stable endpoint
+      ansible.builtin.command: kubectl --server=https://{{ control_plane_endpoint }} --request-timeout=10s get --raw /readyz
+      register: ha_remaining_api
+      changed_when: false
+      until: ha_remaining_api.rc == 0 and ha_remaining_api.stdout == 'ok'
+      retries: 12
+      delay: 3
+    - name: Commit new data through the remaining etcd quorum
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --server=https://{{ control_plane_endpoint }}
+          - --request-timeout=10s
+          - create
+          - configmap
+          - ha-quorum-write
+          - -n
+          - '{{ test_namespace }}'
+          - --from-literal=message=written-with-primary-components-offline
+      changed_when: true
+    - name: Read the committed data through the stable endpoint
+      ansible.builtin.command: kubectl --server=https://{{ control_plane_endpoint }} --request-timeout=10s get configmap ha-quorum-write -n {{ test_namespace }} -o jsonpath={.data.message}
+      register: ha_quorum_read
+      changed_when: false
+    - name: Require the newly committed value
+      ansible.builtin.assert:
+        that: ha_quorum_read.stdout == 'written-with-primary-components-offline'
+  always:
+    - name: Check which manifests need restoration
+      ansible.builtin.stat:
+        path: '{{ ha_manifest_backup.path }}/{{ item }}.yaml'
+      loop: [kube-apiserver, etcd]
+      register: ha_manifest_restores
+    - name: Restore every manifest withdrawn by the test
+      ansible.builtin.command:
+        argv: [mv, '{{ item.stat.path }}', '/etc/kubernetes/manifests/{{ item.item }}.yaml']
+      loop: '{{ ha_manifest_restores.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when: item.stat.exists
+      changed_when: true
+    - name: Remove the empty temporary backup directory
+      ansible.builtin.command:
+        argv: [rmdir, '{{ ha_manifest_backup.path }}']
+      changed_when: true
+    - name: Wait for the primary API server to recover with certificate verification
+      ansible.builtin.command: kubectl --server=https://{{ node_ip | default(ansible_facts.default_ipv4.address) }}:6443 --request-timeout=10s get --raw /readyz
+      register: ha_primary_restored
+      changed_when: false
+      until: ha_primary_restored.rc == 0 and ha_primary_restored.stdout == 'ok'
+      retries: 36
+      delay: 5
+    - name: Require every control-plane etcd pod to become ready again
+      ansible.builtin.command: kubectl --request-timeout=10s wait pod/etcd-{{ hostvars[item].ansible_facts.hostname }} -n kube-system --for=condition=Ready --timeout=10s
+      loop: '{{ groups[control_plane_hosts] }}'
+      register: ha_etcd_restored
+      changed_when: false
+      until: ha_etcd_restored.rc == 0
+      retries: 18
+      delay: 5
+- name: Record the verified control-plane failover
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["the load-balanced API remains ready with the primary API server and etcd stopped", "new API data commits through the remaining etcd quorum", "all primary manifests and etcd members recover after the exercise"] }}'

@@ -1,0 +1,218 @@
+---
+- name: Configure the primary Kubernetes control plane
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  vars:
+    kube_user: '{{ target_user | default(ansible_user | default(''vboxuser'')) }}'
+    cni: '{{ cni_plugin | default(''calico'') }}'
+    calico_version: '{{ calico_ver | default(tool_versions.calico) }}'
+    cilium_version: '{{ cilium_ver | default(tool_versions.cilium) }}'
+  tasks:
+    - name: Validate the selected CNI
+      ansible.builtin.assert:
+        that:
+          - cni in ['calico', 'cilium', 'none']
+        fail_msg: Select calico, cilium, or none for this lab.
+    - name: Detect an existing control plane before writing bootstrap configuration
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: existing_control_plane
+    - name: Create Kubernetes configuration directory
+      ansible.builtin.file:
+        path: /etc/kubernetes
+        state: directory
+        mode: '0755'
+    - name: Read the installed kubeadm patch version
+      ansible.builtin.command: kubeadm version -o short
+      register: installed_kubeadm
+      check_mode: false
+      changed_when: false
+    - name: Write kubeadm configuration using the reachable VM address
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/kubeadm-config.yaml
+        mode: '0600'
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: InitConfiguration
+          localAPIEndpoint:
+            advertiseAddress: "{{ node_ip | default(ansible_facts['default_ipv4']['address']) }}"
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+            kubeletExtraArgs:
+              - name: node-ip
+                value: "{{ node_ip | default(ansible_facts['default_ipv4']['address']) }}"
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: ClusterConfiguration
+          kubernetesVersion: "{{ installed_kubeadm.stdout }}"
+          controlPlaneEndpoint: "{{ control_plane_endpoint | default((ansible_host | default(inventory_hostname)) ~ ':6443') }}"
+          networking:
+            podSubnet: "{{ pod_network_cidr | default('10.244.0.0/16') }}"
+            serviceSubnet: "{{ service_network_cidr | default('10.96.0.0/12') }}"
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+          serverTLSBootstrap: true
+      when: not existing_control_plane.stat.exists
+    - name: Read the exact kubeadm image set for the selected patch release
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - config
+          - images
+          - list
+          - --kubernetes-version
+          - '{{ installed_kubeadm.stdout }}'
+      register: kubeadm_required_images
+      changed_when: false
+      when: controller_image_cache | default(false) | bool
+    - name: Import the selected control-plane images through the controller cache
+      ansible.builtin.include_tasks: ../tasks/cache_image.yml
+      loop: '{{ kubeadm_required_images.stdout_lines | default([]) }}'
+      loop_control:
+        loop_var: bootstrap_image
+      vars:
+        image_request:
+          host: '{{ inventory_hostname }}'
+          image: '{{ bootstrap_image }}'
+      when: controller_image_cache | default(false) | bool and not existing_control_plane.stat.exists
+    - name: Initialize the cluster
+      ansible.builtin.command: kubeadm init --config /etc/kubernetes/kubeadm-config.yaml
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_initialized
+      no_log: true
+    - name: Configure the selected node administrator
+      ansible.builtin.import_tasks: ../tasks/node_kubeconfig.yml
+    - name: Permit application scheduling only for an explicitly selected standalone lab
+      when: allow_single_node | default(false) | bool
+      block:
+        - name: Read the standalone node's taints
+          ansible.builtin.command: kubectl get node {{ ansible_facts.hostname }} -o json
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+          register: standalone_node
+          changed_when: false
+        - name: Remove the control-plane scheduling restriction from the standalone lab
+          ansible.builtin.command: kubectl taint node {{ ansible_facts.hostname }} node-role.kubernetes.io/control-plane:NoSchedule-
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+          when: (standalone_node.stdout | from_json).spec.taints | default([]) | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane') | list | length > 0
+          changed_when: true
+    - name: Run tasks/cni.yml
+      ansible.builtin.import_tasks: ../tasks/cni.yml
+      when: cni != 'none'
+    - name: Show CNI skipped message
+      ansible.builtin.debug:
+        msg: CNI installation skipped. Install your CNI manually before joining workers.
+      when: cni == 'none'
+    - name: Protect the local credentials directory
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts'
+        state: directory
+        mode: '0700'
+    - name: Fetch kubeconfig to the controller checkout
+      ansible.builtin.fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: '{{ repository_root }}/artifacts/kubeconfig'
+        flat: true
+    - name: Restrict local kubeconfig access
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/kubeconfig'
+        mode: '0600'
+    - name: Configure kubectl on the Ansible controller
+      ansible.builtin.import_tasks: ../tasks/install_local_kubeconfig.yml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+
+- name: Inspect additional control-plane membership
+  hosts: '{{ control_plane_hosts }}:!{{ groups[control_plane_hosts][0] }}'
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Check existing kubelet membership
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: additional_control_plane_kubelet
+    - name: Check existing control-plane credentials
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: additional_control_plane_admin
+    - name: Refuse to silently convert an existing worker into a control plane
+      ansible.builtin.assert:
+        that: not additional_control_plane_kubelet.stat.exists or additional_control_plane_admin.stat.exists
+        fail_msg: Explicitly reset this node before changing its Kubernetes role.
+
+- name: Prepare authenticated additional control-plane joins
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Prepare credentials only for a multiple-control-plane topology
+      when: groups[control_plane_hosts] | length > 1
+      block:
+        - name: Select only control planes that need membership
+          ansible.builtin.set_fact:
+            new_control_planes: []
+        - name: Collect pending control-plane nodes
+          ansible.builtin.set_fact:
+            new_control_planes: '{{ new_control_planes + [item] }}'
+          loop: '{{ groups[control_plane_hosts][1:] }}'
+          when: not hostvars[item].additional_control_plane_kubelet.stat.exists
+        - name: Prepare the shared discovery credentials
+          ansible.builtin.import_tasks: ../tasks/join_credentials.yml
+          vars:
+            pending_join_hosts: '{{ new_control_planes }}'
+        - name: Generate an ephemeral certificate encryption key
+          ansible.builtin.command: kubeadm certs certificate-key
+          register: control_plane_certificate_key
+          changed_when: false
+          no_log: true
+          when: new_control_planes | length > 0
+        - name: Upload the encrypted control-plane certificates for the pending joins
+          ansible.builtin.command:
+            argv: [kubeadm, init, phase, upload-certs, --upload-certs, --certificate-key, '{{ control_plane_certificate_key.stdout | trim }}']
+          changed_when: true
+          no_log: true
+          when: new_control_planes | length > 0
+
+- name: Join additional control planes one at a time
+  hosts: '{{ control_plane_hosts }}:!{{ groups[control_plane_hosts][0] }}'
+  become: true
+  gather_facts: false
+  serial: 1
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    kube_user: '{{ target_user | default(ansible_user | default("vboxuser")) }}'
+  tasks:
+    - name: Import the exact control-plane image set through the controller
+      ansible.builtin.include_tasks: ../tasks/cache_image.yml
+      loop: '{{ hostvars[groups[control_plane_hosts][0]].kubeadm_required_images.stdout_lines | default([]) }}'
+      loop_control:
+        loop_var: control_plane_image
+      vars:
+        image_request:
+          host: '{{ inventory_hostname }}'
+          image: '{{ control_plane_image }}'
+      when: controller_image_cache | default(false) | bool and not additional_control_plane_kubelet.stat.exists
+    - name: Join or verify the selected additional control plane
+      ansible.builtin.import_tasks: ../tasks/join_node.yml
+      vars:
+        existing_join_config: '{{ additional_control_plane_kubelet }}'
+        join_control_plane: true
+    - name: Configure the additional node administrator
+      ansible.builtin.import_tasks: ../tasks/node_kubeconfig.yml

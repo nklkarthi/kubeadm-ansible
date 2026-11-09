@@ -1,0 +1,29 @@
+---
+- name: Remove expendable lab caches while preserving installed workloads
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Remove image import archives after they have entered containerd
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: absent
+      loop:
+        - /tmp/kubeadm-images
+        - /tmp/calico-third-party-cni.tar
+    - name: Remove cached APT package archives
+      ansible.builtin.apt:
+        clean: true
+    - name: Optionally prune only unused CRI images
+      ansible.builtin.command: crictl rmi --prune
+      when: prune_unused_images | default(false) | bool
+      register: image_prune
+      changed_when: '''Deleted:'' in image_prune.stdout'
+    - name: Report filesystem space
+      ansible.builtin.command: df -h /
+      register: filesystem_space
+      changed_when: false
+    - name: Show filesystem space
+      ansible.builtin.debug:
+        var: filesystem_space.stdout_lines

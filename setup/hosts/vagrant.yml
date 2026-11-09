@@ -1,0 +1,138 @@
+---
+- name: Manage the selected local lab VMs through Vagrant
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    vagrant_state: started
+    vagrant_nodes: [master, worker-01, worker-02]
+    vagrant_provider: '{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}'
+    vagrant_commands:
+      started: [up, '--provider={{ vagrant_provider }}', --no-parallel, --provision]
+      stopped: [halt]
+      absent: [destroy, --force]
+      status: [status]
+  environment:
+    VAGRANT_LAB_PROVIDER: '{{ vagrant_provider }}'
+  tasks:
+    - name: Require an explicit selection from this lab's Vagrant machines
+      ansible.builtin.assert:
+        that:
+          - vagrant_state in ['started', 'stopped', 'absent', 'status']
+          - vagrant_provider in ['hyperv', 'virtualbox']
+          - vagrant_nodes | length > 0
+          - vagrant_nodes | difference(['master', 'worker-01', 'worker-02', 'ha-01', 'ha-02', 'mesh-01', 'lfcs']) | length == 0
+    - name: Read machine states before creating any guests
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', status, --machine-readable]
+      register: vagrant_before
+      changed_when: false
+      when: vagrant_state == 'started'
+    - name: Select only guests that require their first boot
+      ansible.builtin.set_fact:
+        new_vagrant_nodes: '{{ vagrant_nodes | select("in", vagrant_before.stdout | regex_findall("(?m)^[^,]+,([^,]+),state,not_created$")) | list }}'
+      when: vagrant_state == 'started'
+    - name: Preserve the requested order when selecting existing guests
+      ansible.builtin.set_fact:
+        existing_vagrant_nodes: '{{ vagrant_nodes | reject("in", new_vagrant_nodes) | list }}'
+      when: vagrant_state == 'started'
+    - name: Apply the requested operation to existing guests
+      ansible.builtin.command:
+        argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands[vagrant_state] + (existing_vagrant_nodes if vagrant_state == "started" else vagrant_nodes) }}'
+      changed_when: vagrant_state != 'status'
+      when: vagrant_state != 'started' or existing_vagrant_nodes | length > 0
+    - name: Create and provision the selected new guests with two CPUs
+      ansible.builtin.command:
+        argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands.started + new_vagrant_nodes }}'
+      when: vagrant_state == 'started' and new_vagrant_nodes | length > 0
+      changed_when: true
+    - name: Locate provider state without copying guest disks into WSL
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', --state-path]
+      register: vagrant_state_path
+      changed_when: false
+      when: vagrant_state == 'started'
+    - name: Create the shared-key access marker directory
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/vagrant/access'
+        state: directory
+        mode: '0700'
+      when: vagrant_state == 'started'
+    - name: Use the shared controller key only after provisioning the current VM
+      ansible.builtin.copy:
+        content: '{{ lookup("ansible.builtin.file", vagrant_state_path.stdout ~ "/machines/" ~ item ~ "/" ~ vagrant_provider ~ "/id") | trim }}'
+        dest: '{{ repository_root }}/artifacts/vagrant/access/{{ item }}-{{ vagrant_provider }}.id'
+        mode: '0600'
+      loop: '{{ vagrant_nodes }}'
+      when: vagrant_state == 'started'
+    - name: Check whether provisioning changed persistent boot or network settings
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', ssh, '{{ item }}', -c, 'test -f /run/kubeadm-lab-reboot']
+      loop: '{{ vagrant_nodes }}'
+      register: vagrant_reboot_checks
+      changed_when: false
+      failed_when: vagrant_reboot_checks.rc not in [0, 1]
+      when: vagrant_state == 'started'
+    - name: Select guests that need a reboot to apply their provisioned settings
+      ansible.builtin.set_fact:
+        vagrant_reboot_nodes: '{{ vagrant_nodes | select("in", new_vagrant_nodes + (vagrant_reboot_checks.results | selectattr("rc", "equalto", 0) | map(attribute="item") | list)) | list }}'
+      when: vagrant_state == 'started'
+    - name: Reboot only guests with new persistent network or boot configuration
+      ansible.builtin.command:
+        argv: '{{ [repository_root ~ "/scripts/vagrant.sh", "reload", "--no-provision"] + vagrant_reboot_nodes }}'
+      when:
+        - vagrant_state == 'started'
+        - vagrant_reboot_nodes | length > 0
+      changed_when: true
+    - name: Read the SSH host identities through the managed Vagrant connections
+      ansible.builtin.command:
+        argv:
+          - '{{ repository_root }}/scripts/vagrant.sh'
+          - ssh
+          - '{{ hostvars[item].vagrant_name }}'
+          - -c
+          - cat /etc/ssh/ssh_host_ed25519_key.pub
+      loop: '{{ groups["vbox_hosts"] }}'
+      when: vagrant_state == 'started' and hostvars[item].vagrant_name in vagrant_nodes
+      register: vagrant_host_keys
+      changed_when: false
+      tags: [vagrant_access]
+    - name: Trust only the host keys obtained through the managed Vagrant connections
+      ansible.builtin.known_hosts:
+        name: '{{ hostvars[item.item].ansible_host | default(item.item) }}'
+        key: '{{ hostvars[item.item].ansible_host | default(item.item) }} {{ item.stdout_lines | select("match", "^ssh-ed25519 ") | first }}'
+      loop: '{{ vagrant_host_keys.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when: item.stdout is defined
+      tags: [vagrant_access]
+
+- name: Verify the Vagrant guests match the home inventory
+  hosts: vbox_hosts
+  become: true
+  vars:
+    vagrant_state: started
+    vagrant_nodes: [master, worker-01, worker-02]
+  tasks:
+    - name: Check the selected guests after creation or startup
+      when: vagrant_state == 'started' and vagrant_name in vagrant_nodes
+      block:
+        - name: Read guest facts after the lifecycle operation
+          ansible.builtin.setup:
+            gather_subset:
+              - min
+              - hardware
+              - network
+        - name: Require the configured OS, CPUs, memory and reachable cluster address
+          ansible.builtin.assert:
+            that:
+              - ansible_facts.distribution == vagrant_guest_distribution | default('Ubuntu')
+              - ansible_facts.distribution_version is version(vagrant_guest_release | default('24.04'), '==')
+              - ansible_facts.processor_vcpus | int >= 2
+              - ansible_facts.memtotal_mb | int >= vagrant_guest_min_memory_mb | default(1900) | int
+              - node_ip in ansible_facts.all_ipv4_addresses
+
+  gather_facts: false

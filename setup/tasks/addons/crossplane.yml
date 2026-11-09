@@ -1,0 +1,39 @@
+---
+- name: Install the selected Crossplane control plane
+  ansible.builtin.include_tasks: ../helm_release.yml
+  vars:
+    helm_release_name: crossplane
+    helm_namespace: crossplane-system
+    helm_chart_name: crossplane
+    helm_chart_version: '{{ tool_versions.crossplane }}'
+    helm_chart_source: '{{ helm_chart_sources.crossplane }}'
+    helm_values:
+      resourcesCrossplane:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      resourcesRBACManager:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 256Mi
+- name: Install the pinned composition function
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: pkg.crossplane.io/v1
+      kind: Function
+      metadata:
+        name: function-patch-and-transform
+      spec:
+        package: 'xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:{{ tool_versions.crossplane_patch_transform }}'
+- name: Cache images requested by the composition function
+  ansible.builtin.include_tasks: ../preload_pod_images.yml
+- name: Require a healthy composition function before exposing platform APIs
+  ansible.builtin.command: kubectl wait function/function-patch-and-transform --for=condition=Healthy --timeout=300s
+  changed_when: false

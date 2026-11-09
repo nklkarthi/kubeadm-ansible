@@ -1,0 +1,63 @@
+---
+- name: Verify CPU stability and inventory addresses on the local lab VMs
+  hosts: vbox_hosts
+  become: true
+  gather_subset: [min, hardware, network]
+  vars:
+    vagrant_provider: '{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}'
+  tasks:
+    - name: Require the selected Ubuntu release and at least two working CPUs
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == vagrant_guest_distribution | default('Ubuntu')
+          - ansible_facts.distribution_version is version(vagrant_guest_release | default('24.04'), '==')
+          - ansible_facts.processor_vcpus | int >= 2
+          - node_ip in ansible_facts.all_ipv4_addresses
+          - ansible_facts.hostname == vagrant_guest_hostname | default('kube-' ~ vagrant_name)
+    - name: Require Hyper-V guests to use their inventory address for the default route
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.default_ipv4.address == node_ip
+      when: vagrant_provider == 'hyperv'
+    - name: Read the effective guest kernel command line
+      ansible.builtin.command: cat /proc/cmdline
+      register: local_vm_boot_arguments
+      changed_when: false
+    - name: Require installer-only arguments to be absent from the booted system
+      ansible.builtin.assert:
+        that:
+          - "'autoinstall' not in local_vm_boot_arguments.stdout"
+          - "'ds=nocloud-net' not in local_vm_boot_arguments.stdout"
+    - name: Read each guest's SSH host identity
+      ansible.builtin.command: cat /etc/ssh/ssh_host_ed25519_key.pub
+      register: local_vm_host_identity
+      changed_when: false
+    - name: Require distinct machine IDs and server identities across the selected guests
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | map('extract', hostvars, ['ansible_facts', 'machine_id']) | unique | length == ansible_play_hosts_all | length
+          - ansible_play_hosts_all | map('extract', hostvars, ['local_vm_host_identity', 'stdout']) | unique | length == ansible_play_hosts_all | length
+      when: inventory_hostname == ansible_play_hosts_all[0]
+    - name: Exercise both virtual CPUs with bounded hashing work
+      ansible.builtin.command: openssl speed -elapsed -seconds 2 -multi 2 sha256
+      register: local_vm_cpu_test
+      changed_when: false
+      timeout: 60
+    - name: Require completed benchmark results rather than a partially hung process
+      ansible.builtin.assert:
+        that: local_vm_cpu_test.stdout is search('(?m)^sha256\s+[0-9]')
+    - name: Let the guests return to idle before checking interrupt stability
+      ansible.builtin.wait_for:
+        timeout: 20
+      delegate_to: localhost
+      become: false
+    - name: Read warnings from the current guest boot after load and idle
+      ansible.builtin.command: journalctl -k -b --no-pager --priority=0..4
+      register: local_vm_kernel_warnings
+      changed_when: false
+      timeout: 30
+    - name: Reject CPU soft lockups or RCU stalls during the current boot
+      ansible.builtin.assert:
+        that:
+          - "'soft lockup' not in local_vm_kernel_warnings.stdout"
+          - "'detected stalls' not in local_vm_kernel_warnings.stdout"

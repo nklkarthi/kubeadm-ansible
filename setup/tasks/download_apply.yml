@@ -1,0 +1,64 @@
+---
+- name: Create the add-on manifest directory
+  ansible.builtin.file:
+    path: /etc/kubernetes/addons
+    state: directory
+    mode: "0755"
+- name: Download the pinned source manifest
+  ansible.builtin.include_tasks: download_file.yml
+  vars:
+    download_spec:
+      url: "{{ manifest_url }}"
+      checksum: '{{ manifest_checksum | default(omit) }}'
+      dest: /etc/kubernetes/addons/{{ manifest_name }}.source.yaml
+      mode: "0644"
+- name: Render and reconcile resources from the pinned source
+  when: not ansible_check_mode
+  block:
+    - name: Read the unmodified source manifest
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/addons/{{ manifest_name }}.source.yaml
+      register: manifest_source
+    - name: Read source Kubernetes objects
+      ansible.builtin.set_fact:
+        manifest_objects: '{{ manifest_source.content | b64decode | from_yaml_all | select("mapping") | list }}'
+    - name: Require each override to match an upstream resource
+      ansible.builtin.assert:
+        that: manifest_objects | selectattr('kind', 'equalto', item.kind) | selectattr('metadata.name', 'equalto', item.name) | list | length > 0
+      loop: "{{ manifest_patches | default([]) }}"
+      loop_control:
+        label: "{{ item.kind }}/{{ item.name }}"
+    - name: Render the declared resources with the shared Ansible template
+      ansible.builtin.set_fact:
+        rendered_manifest: "{{ lookup('ansible.builtin.template', repository_root ~ '/setup/templates/manifest-list.json.j2') | from_json }}"
+    - name: Compare declared resources with the API before applying
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - diff
+          - --server-side
+          - --field-manager=kubeadm-ansible
+          - --namespace
+          - "{{ addon_namespace }}"
+          - -f
+          - "-"
+        stdin: "{{ rendered_manifest | to_json }}"
+      register: addon_diff
+      failed_when: addon_diff.rc not in [0, 1]
+      changed_when: false
+    - name: Apply only resources with a declared change
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - --server-side
+          - --field-manager=kubeadm-ansible
+          - --namespace
+          - "{{ addon_namespace }}"
+          - -f
+          - "-"
+        stdin: "{{ rendered_manifest | to_json }}"
+      when: addon_diff.rc == 1
+      changed_when: true
+    - name: Cache images required by the new resources
+      ansible.builtin.include_tasks: preload_pod_images.yml

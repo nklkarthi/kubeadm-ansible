@@ -1,0 +1,19 @@
+---
+- name: Reset the selected workers
+  hosts: "{{ worker_hosts }}"
+  become: true
+  serial: 1
+  tasks:
+    - name: Reset the selected node with the shared maintenance tasks
+      ansible.builtin.import_tasks: ../tasks/reset_node.yml
+  vars_files:
+    - ../vars/common.yml
+- name: Reset the selected control plane
+  hosts: "{{ control_plane_hosts }}"
+  become: true
+  serial: 1
+  tasks:
+    - name: Reset the selected node with the shared maintenance tasks
+      ansible.builtin.import_tasks: ../tasks/reset_node.yml
+  vars_files:
+    - ../vars/common.yml

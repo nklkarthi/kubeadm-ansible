@@ -1,0 +1,46 @@
+---
+- name: Prepare the dynamic storage namespace before comparing resources
+  ansible.builtin.include_tasks: ../namespace.yml
+  vars:
+    addon_namespace: local-path-storage
+- name: Reconcile the pinned dynamic local-volume provisioner
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: local-path-storage
+    manifest_name: local-path-{{ tool_versions.local_path_provisioner }}
+    manifest_url: https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ tool_versions.local_path_provisioner
+      }}/deploy/local-path-storage.yaml
+    manifest_patches:
+      - kind: StorageClass
+        name: local-path
+        value:
+          metadata:
+            annotations:
+              storageclass.kubernetes.io/is-default-class: 'true'
+      - kind: ConfigMap
+        name: local-path-config
+        value:
+          data:
+            config.json: |
+              {"nodePathMap":[{"node":"DEFAULT_PATH_FOR_NON_LISTED_NODES","paths":["/var/lib/kubeadm-certifications/volumes"]}]}
+            helperPod.yaml: |
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: helper-pod
+              spec:
+                priorityClassName: system-node-critical
+                tolerations:
+                  - key: node.kubernetes.io/disk-pressure
+                    operator: Exists
+                    effect: NoSchedule
+                containers:
+                  - name: helper-pod
+                    image: docker.io/library/busybox:1.37.0
+                    imagePullPolicy: IfNotPresent
+                    resources:
+                      requests: {cpu: 5m, memory: 8Mi}
+                      limits: {cpu: 100m, memory: 32Mi}
+- name: Wait for the dynamic storage controller
+  ansible.builtin.command: kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=300s
+  changed_when: false

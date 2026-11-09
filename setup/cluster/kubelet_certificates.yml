@@ -1,0 +1,45 @@
+---
+- name: Establish trusted serving certificates for selected kubelets
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Read the shared kubelet configuration
+      ansible.builtin.command: kubectl get configmap kubelet-config -n kube-system -o json
+      register: shared_kubelet_config
+      changed_when: false
+    - name: Preserve secure serving bootstrap for future node joins
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - patch
+          - configmap
+          - kubelet-config
+          - -n
+          - kube-system
+          - --type=merge
+          - -p
+          - '{{ {"data": {"kubelet": ((shared_kubelet_config.stdout | from_json).data.kubelet | from_yaml |
+            combine({"serverTLSBootstrap": true})) | to_nice_yaml}} | to_json }}'
+      register: kubelet_bootstrap_patch
+      changed_when: '''(no change)'' not in kubelet_bootstrap_patch.stdout'
+    - name: Wait for selected kubelets to request their serving certificates
+      ansible.builtin.command: kubectl get certificatesigningrequests -o json
+      register: serving_csrs
+      changed_when: false
+      until: (groups[cluster_hosts] | map('extract', hostvars, ['ansible_facts', 'hostname']) | list) | difference((serving_csrs.stdout
+        | from_json)['items'] | selectattr('spec.signerName', 'equalto', 'kubernetes.io/kubelet-serving') |
+        map(attribute='spec.username') | map('regex_replace', '^system:node:', '') | list) | length == 0
+      retries: 24
+      delay: 5
+    - name: Verify and approve only pending node serving requests
+      ansible.builtin.include_tasks: ../tasks/approve_kubelet_csr.yml
+      loop: '{{ (serving_csrs.stdout | from_json)[''items''] | selectattr(''spec.signerName'', ''equalto'',
+        ''kubernetes.io/kubelet-serving'') | rejectattr(''status.certificate'', ''defined'') | list }}'
+      loop_control:
+        loop_var: serving_csr
+        label: '{{ serving_csr.metadata.name }} {{ serving_csr.spec.username }}'

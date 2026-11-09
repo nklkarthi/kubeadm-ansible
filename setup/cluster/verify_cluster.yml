@@ -1,0 +1,144 @@
+---
+- name: Prepare images required by newly scheduled base pods
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Import only missing scheduled images
+      ansible.builtin.include_tasks: ../tasks/preload_pod_images.yml
+- name: Read the selected guest identities
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Read guest network facts when they are not already available
+      ansible.builtin.setup:
+        gather_subset:
+          - min
+          - network
+      when: ansible_facts.default_ipv4 is not defined
+    - name: Wait for the active container runtime and CNI to be ready
+      ansible.builtin.command: crictl info
+      register: verified_runtime
+      changed_when: false
+      check_mode: false
+      no_log: true
+      until: (verified_runtime.stdout | from_json).status.conditions | selectattr('type', 'in', ['RuntimeReady',
+        'NetworkReady']) | selectattr('status', 'equalto', true) | list | length == 2
+      retries: 6
+      delay: 5
+    - name: Require the active runtime to use systemd cgroups
+      ansible.builtin.assert:
+        that: (verified_runtime.stdout | from_json).config.containerd.runtimes.runc.options.SystemdCgroup |
+          bool
+        fail_msg: The active containerd runtime differs from the systemd cgroup configuration.
+- name: Verify the selected cluster matches the base configuration
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Check API server readiness
+      ansible.builtin.command: kubectl get --raw /readyz
+      register: api_readiness
+      changed_when: false
+      failed_when: api_readiness.rc != 0 or api_readiness.stdout != 'ok'
+      check_mode: false
+    - name: Wait for all registered nodes to be Ready
+      ansible.builtin.command: kubectl wait nodes --all --for=condition=Ready --timeout=300s
+      changed_when: false
+      check_mode: false
+    - name: Read node versions and addresses
+      ansible.builtin.command: kubectl get nodes -o json
+      register: verified_nodes
+      changed_when: false
+      check_mode: false
+    - name: Require the expected node count and Kubernetes minor
+      ansible.builtin.assert:
+        that:
+          - (verified_nodes.stdout | from_json)['items'] | length == groups[cluster_hosts] | length
+          - item.status.nodeInfo.kubeletVersion is match('^' ~ (k8s_version | default(tool_versions.kubernetes_minor)
+            | regex_escape) ~ '\.')
+        fail_msg: The registered nodes differ from the selected inventory or Kubernetes minor.
+      loop: '{{ (verified_nodes.stdout | from_json)[''items''] }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+    - name: Read each active kubelet configuration
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - --raw
+          - /api/v1/nodes/{{ item.metadata.name }}/proxy/configz
+      loop: '{{ (verified_nodes.stdout | from_json)[''items''] }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+      register: verified_kubelets
+      changed_when: false
+      check_mode: false
+      no_log: true
+    - name: Require matching active kubelet and runtime cgroup drivers
+      ansible.builtin.assert:
+        that: (item.stdout | from_json).kubeletconfig.cgroupDriver == 'systemd'
+        fail_msg: The kubelet must be restarted after a runtime cgroup-driver change.
+      loop: '{{ verified_kubelets.results }}'
+      loop_control:
+        label: '{{ item.item.metadata.name }}'
+    - name: Require every inventory address to be registered
+      ansible.builtin.assert:
+        that:
+          - (hostvars[item].node_ip | default(hostvars[item].ansible_facts.default_ipv4.address)) in ((verified_nodes.stdout
+            | from_json)['items'] | map(attribute='status.addresses') | flatten | selectattr('type', 'equalto',
+            'InternalIP') | map(attribute='address') | list)
+      loop: '{{ groups[cluster_hosts] }}'
+    - name: Wait for the selected network provider
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - daemonset/{{ "cilium" if cni_plugin | default("calico") == "cilium" else "calico-node" }}
+          - -n
+          - kube-system
+          - --timeout=300s
+      changed_when: false
+      check_mode: false
+    - name: Wait for kube-proxy
+      ansible.builtin.command: kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=300s
+      changed_when: false
+      check_mode: false
+    - name: Wait for Calico controllers
+      ansible.builtin.command: kubectl rollout status deployment/calico-kube-controllers -n kube-system --timeout=300s
+      changed_when: false
+      when: cni_plugin | default('calico') == 'calico'
+      check_mode: false
+    - name: Wait for cluster DNS
+      ansible.builtin.command: kubectl rollout status deployment/coredns -n kube-system --timeout=300s
+      changed_when: false
+      check_mode: false
+    - name: Read the DNS service
+      ansible.builtin.command: kubectl get service kube-dns -n kube-system -o json
+      register: dns_service
+      changed_when: false
+      check_mode: false
+    - name: Require a DNS service address
+      ansible.builtin.assert:
+        that:
+          - (dns_service.stdout | from_json).spec.clusterIP not in ['', 'None']
+    - name: Show the verified cluster
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: verified_summary
+      changed_when: false
+      check_mode: false
+    - name: Show node status
+      ansible.builtin.debug:
+        var: verified_summary.stdout_lines

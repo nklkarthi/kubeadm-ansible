@@ -1,0 +1,176 @@
+---
+- name: Install Gitea on the selected lab worker
+  hosts: '{{ gitea_target_host | default(worker_hosts ~ ''[0]'') }}'
+  become: true
+  vars:
+    gitea_version: '{{ gitea_release | default(tool_versions.gitea) }}'
+    gitea_port: '{{ gitea_http_port | default(3000) | int }}'
+  tasks:
+    - name: Validate binary architecture
+      ansible.builtin.assert:
+        that: ansible_facts.architecture in ['x86_64', 'aarch64']
+    - name: Install Git and SQLite prerequisites
+      ansible.builtin.apt:
+        name:
+          - git
+          - sqlite3
+          - ca-certificates
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create the Git service account
+      ansible.builtin.user:
+        name: git
+        home: /var/lib/gitea
+        shell: /bin/bash
+        system: true
+        create_home: true
+    - name: Create service data directories
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: git
+        group: git
+        mode: '0750'
+      loop:
+        - /var/lib/gitea
+        - /var/lib/gitea/data
+        - /var/lib/gitea/log
+        - /var/lib/gitea/repositories
+        - /etc/gitea
+    - name: Check whether Gitea is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/gitea
+      register: existing_gitea
+    - name: Read the installed Gitea release
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/gitea
+          - --version
+      changed_when: false
+      register: installed_gitea
+      when: existing_gitea.stat.exists
+      check_mode: false
+    - name: Require an explicit upgrade decision for an existing Gitea database
+      ansible.builtin.assert:
+        that:
+          - not existing_gitea.stat.exists or gitea_version in (installed_gitea.stdout | default('')) or allow_gitea_upgrade
+            | default(false) | bool
+        fail_msg: Gitea upgrades can migrate the database. Back up /var/lib/gitea and set allow_gitea_upgrade=true
+          for a reviewed upgrade.
+    - name: Download the checksummed Gitea binary
+      ansible.builtin.include_tasks: ../tasks/download_file.yml
+      vars:
+        download_spec:
+          url: https://github.com/go-gitea/gitea/releases/download/v{{ gitea_version }}/gitea-{{ gitea_version
+            }}-linux-{{ "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}
+          checksum: sha256:https://github.com/go-gitea/gitea/releases/download/v{{ gitea_version }}/gitea-{{
+            gitea_version }}-linux-{{ "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}.sha256
+          dest: /usr/local/bin/gitea
+          owner: root
+          group: root
+          mode: '0755'
+        download_notify: Restart Gitea
+    - name: Create only the initial Gitea configuration
+      ansible.builtin.copy:
+        dest: /etc/gitea/app.ini
+        force: false
+        owner: git
+        group: git
+        mode: '0640'
+        content: |
+          APP_NAME = Gitea
+          RUN_MODE = prod
+
+          [repository]
+          ROOT = /var/lib/gitea/repositories
+
+          [server]
+          HTTP_PORT = {{ gitea_port }}
+          DOMAIN = {{ ansible_host | default(inventory_hostname) }}
+          ROOT_URL = http://{{ ansible_host | default(inventory_hostname) }}:{{ gitea_port }}/
+
+          [database]
+          DB_TYPE = sqlite3
+          PATH = /var/lib/gitea/data/gitea.db
+
+          [log]
+          MODE = console
+          LEVEL = info
+      notify: Restart Gitea
+    - name: Ensure a webhook section exists without duplicating it
+      ansible.builtin.lineinfile:
+        path: /etc/gitea/app.ini
+        regexp: ^\[webhook\]
+        line: '[webhook]'
+        insertafter: EOF
+      notify: Restart Gitea
+    - name: Set only the allowed webhook destinations
+      ansible.builtin.lineinfile:
+        path: /etc/gitea/app.ini
+        regexp: ^ALLOWED_HOST_LIST\s*=
+        line: ALLOWED_HOST_LIST = {{ gitea_webhook_allowed_hosts | default([hostvars[groups[control_plane_hosts][0]].node_ip
+          | default(groups[control_plane_hosts][0])]) | join(",") }}
+        insertafter: ^\[webhook\]
+      notify: Restart Gitea
+    - name: Install the Gitea systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/gitea.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Gitea
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=git
+          Group=git
+          WorkingDirectory=/var/lib/gitea
+          ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
+          Restart=on-failure
+          Environment=USER=git HOME=/var/lib/gitea GITEA_WORK_DIR=/var/lib/gitea
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart Gitea
+    - name: Allow the Gitea port in the existing lab firewall
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - '{{ gitea_port }}/tcp'
+      environment:
+        LC_ALL: C
+      register: gitea_ufw
+      changed_when: '''Rule added'' in gitea_ufw.stdout or ''Rules updated'' in gitea_ufw.stdout'
+    - name: Enable and start Gitea
+      ansible.builtin.systemd_service:
+        name: gitea
+        enabled: true
+        state: started
+        daemon_reload: true
+    - name: Apply service configuration before checking readiness
+      ansible.builtin.meta: flush_handlers
+    - name: Check Gitea readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:{{ gitea_port }}/api/healthz
+        status_code: 200
+        timeout: 5
+      register: gitea_health
+      until: gitea_health.status == 200
+      retries: 12
+      delay: 5
+    - name: Report the first-run setup URL without resetting INSTALL_LOCK
+      ansible.builtin.debug:
+        msg: 'Gitea: http://{{ ansible_host | default(inventory_hostname) }}:{{ gitea_port }}/. Existing app.ini
+          secrets and INSTALL_LOCK are preserved.'
+  handlers:
+    - name: Restart Gitea
+      ansible.builtin.systemd_service:
+        name: gitea
+        state: restarted
+        daemon_reload: true
+  vars_files:
+    - ../vars/common.yml

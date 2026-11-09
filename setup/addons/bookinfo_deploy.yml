@@ -1,0 +1,71 @@
+---
+- name: Deploy the version-matched Istio Bookinfo sample
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    istio_version: '{{ istio_release | default(tool_versions.istio) }}'
+    addon_namespace: '{{ bookinfo_namespace | default(''bookinfo'') }}'
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Check the installed Istio release
+      ansible.builtin.import_tasks: ../tasks/istio_access.yml
+    - name: Run tasks/namespace.yml
+      ansible.builtin.import_tasks: ../tasks/namespace.yml
+    - name: Enable sidecar injection on the selected application namespace
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - label
+          - namespace
+          - '{{ addon_namespace }}'
+          - istio-injection=enabled
+          - --overwrite
+      changed_when: '''not labeled'' not in injection_label.stdout'
+      register: injection_label
+    - name: Reconcile Bookinfo workloads
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/bookinfo/platform/kube/bookinfo.yaml
+        manifest_name: bookinfo-{{ istio_version }}-workloads
+    - name: Reconcile Bookinfo gateway
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/bookinfo/networking/bookinfo-gateway.yaml
+        manifest_name: bookinfo-{{ istio_version }}-gateway
+    - name: Wait for each Bookinfo deployment
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/{{ item }}
+          - -n
+          - '{{ addon_namespace }}'
+          - --timeout=300s
+      loop:
+        - productpage-v1
+        - details-v1
+        - ratings-v1
+        - reviews-v1
+        - reviews-v2
+        - reviews-v3
+      changed_when: false
+    - name: Verify Bookinfo through the gateway
+      ansible.builtin.uri:
+        url: http://{{ lab_access_host }}:{{ istio_nodeport_http | default(lab_nodeports.istio_http)
+          }}/productpage
+        status_code: 200
+        timeout: 15
+      delegate_to: localhost
+      become: false
+      register: bookinfo_http
+      until: bookinfo_http.status == 200
+      retries: 6
+      delay: 5
+  vars_files:
+    - ../vars/common.yml

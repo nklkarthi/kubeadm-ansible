@@ -1,0 +1,130 @@
+---
+- name: Install the pinned Falco runtime-security service
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars:
+    falco_version: '{{ falco_release | default(tool_versions.falco) }}'
+    falco_driver: '{{ falco_driver_type | default(''modern_ebpf'') }}'
+    falco_service: falco-{{ 'modern-bpf' if falco_driver == 'modern_ebpf' else 'kmod' }}.service
+  tasks:
+    - name: Validate the supported Falco drivers
+      ansible.builtin.assert:
+        that: falco_driver in ['modern_ebpf', 'kmod']
+    - name: Check BTF for the modern eBPF driver
+      ansible.builtin.stat:
+        path: /sys/kernel/btf/vmlinux
+      register: kernel_btf
+      when: falco_driver == 'modern_ebpf'
+    - name: Require kernel BTF before installing modern eBPF Falco
+      ansible.builtin.assert:
+        that: kernel_btf.stat.exists
+        fail_msg: The modern eBPF driver requires kernel BTF support.
+      when: falco_driver == 'modern_ebpf'
+    - name: Install repository prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create APT signing-key directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Download the Falco signing key
+      ansible.builtin.include_tasks: ../tasks/download_file.yml
+      vars:
+        download_spec:
+          url: https://falco.org/repo/falcosecurity-packages.asc
+          dest: /etc/apt/keyrings/falcosecurity.asc
+          mode: '0644'
+    - name: Remove the former playbook-managed legacy repository file
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/falcosecurity.list
+        state: absent
+    - name: Configure the Falco DEB822 repository
+      ansible.builtin.deb822_repository:
+        name: falcosecurity
+        types:
+          - deb
+        uris: https://download.falco.org/packages/deb
+        suites:
+          - stable
+        components:
+          - main
+        signed_by: /etc/apt/keyrings/falcosecurity.asc
+    - name: Install kernel headers for the explicitly selected module driver
+      ansible.builtin.apt:
+        name:
+          - linux-headers-{{ ansible_facts.kernel }}
+        state: present
+      when: falco_driver == 'kmod'
+    - name: Install the pinned Falco release without interactive package prompts
+      ansible.builtin.apt:
+        name: falco={{ falco_version }}*
+        state: present
+        update_cache: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        FALCO_DRIVER_CHOICE: '{{ falco_driver }}'
+      notify: Restart Falco
+    - name: Create the managed Falco configuration directory
+      ansible.builtin.file:
+        path: /etc/falco/config.d
+        state: directory
+        mode: '0755'
+    - name: Set the driver in an owned configuration drop-in
+      ansible.builtin.copy:
+        dest: /etc/falco/config.d/zz-kubeadm-lab.yaml
+        mode: '0644'
+        content: |
+          engine:
+            kind: {{ falco_driver }}
+      notify: Restart Falco
+    - name: Read installed Falco service units
+      ansible.builtin.service_facts: {}
+    - name: Stop other installed Falco driver services
+      ansible.builtin.systemd_service:
+        name: '{{ item }}'
+        state: stopped
+        enabled: false
+      loop:
+        - falco-modern-bpf.service
+        - falco-kmod.service
+        - falco-bpf.service
+      when:
+        - item != falco_service
+        - item in ansible_facts.services
+    - name: Enable the selected driver-specific service
+      ansible.builtin.systemd_service:
+        name: '{{ falco_service }}'
+        state: started
+        enabled: true
+    - name: Apply driver configuration before checking service health
+      ansible.builtin.meta: flush_handlers
+    - name: Verify the driver-specific service is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - '{{ falco_service }}'
+      changed_when: false
+      register: falco_active
+      until: falco_active.rc == 0
+      retries: 6
+      delay: 5
+    - name: Report the installed Falco version
+      ansible.builtin.command:
+        argv:
+          - falco
+          - --version
+      changed_when: false
+  handlers:
+    - name: Restart Falco
+      ansible.builtin.systemd_service:
+        name: '{{ falco_service }}'
+        state: restarted
+  vars_files:
+    - ../vars/common.yml

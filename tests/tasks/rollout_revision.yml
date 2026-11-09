@@ -1,0 +1,41 @@
+---
+- name: Declare the selected blue-green revision
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Rollout
+      metadata: {name: delivery, namespace: '{{ test_namespace }}'}
+      spec:
+        replicas: 1
+        revisionHistoryLimit: 1
+        selector:
+          matchLabels: {app: progressive-delivery}
+        strategy:
+          blueGreen:
+            activeService: delivery-active
+            previewService: delivery-preview
+            autoPromotionEnabled: true
+            scaleDownDelaySeconds: 5
+        template:
+          metadata:
+            labels: {app: progressive-delivery}
+          spec:
+            containers:
+              - name: web
+                image: docker.io/library/busybox:1.37.0
+                command: [sh, -c, 'mkdir -p /www && echo {{ delivery_revision }} > /www/index.html && exec httpd -f -p 8080 -h /www']
+                ports: [{containerPort: 8080}]
+                readinessProbe:
+                  httpGet: {path: /, port: 8080}
+                  periodSeconds: 2
+                resources:
+                  requests: {cpu: 10m, memory: 8Mi}
+                  limits: {cpu: 100m, memory: 32Mi}
+- name: Require the active service to deliver the selected revision
+  ansible.builtin.command: kubectl exec deployment/web -n {{ test_namespace }} -- wget -T 5 -q -O- http://delivery-active
+  register: rollout_response
+  changed_when: false
+  until: rollout_response.rc == 0 and rollout_response.stdout | trim == delivery_revision
+  retries: 30
+  delay: 3

@@ -1,0 +1,36 @@
+---
+- name: Create the Argo rollouts namespace
+  ansible.builtin.include_tasks: ../namespace.yml
+  vars:
+    addon_namespace: argo-rollouts
+- name: Install the pinned Argo rollouts components
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: argo-rollouts
+    manifest_checksum: '{{ manifest_checksums.rollouts }}'
+    manifest_name: rollouts-{{ tool_versions.argo_rollouts }}
+    manifest_url: https://github.com/argoproj/argo-rollouts/releases/download/{{ tool_versions.argo_rollouts }}/install.yaml
+    manifest_patches:
+      - kind: Deployment
+        name: argo-rollouts
+        container_resources:
+          argo-rollouts:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+- name: Wait for the Argo rollouts controllers
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - deployment/{{ item }}
+      - -n
+      - argo-rollouts
+      - --timeout=600s
+  loop:
+    - argo-rollouts
+  changed_when: false

@@ -1,0 +1,200 @@
+---
+- name: Enable sidecar injection for the isolated mesh exercise
+  ansible.builtin.command: kubectl label namespace {{ test_namespace }} istio-injection=enabled --overwrite
+  changed_when: true
+- name: Deploy two small service versions and meshed and unmeshed clients
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  loop: [v1, v2]
+  vars:
+    manifest_definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mesh-{{ item }}
+        namespace: '{{ test_namespace }}'
+      spec:
+        replicas: 1
+        selector:
+          matchLabels: {app: mesh-backend, version: '{{ item }}'}
+        template:
+          metadata:
+            labels: {app: mesh-backend, version: '{{ item }}'}
+          spec:
+            containers:
+              - name: web
+                image: docker.io/library/busybox:1.37.0
+                command: [sh, -c, 'mkdir -p /www && echo mesh-{{ item }} > /www/index.html && exec httpd -f -p 8080 -h /www']
+                ports: [{name: http, containerPort: 8080}]
+                resources:
+                  requests: {cpu: 10m, memory: 8Mi}
+                  limits: {cpu: 100m, memory: 32Mi}
+- name: Configure subset routing, strict mutual TLS and a mesh ingress
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: mesh-backend
+            namespace: '{{ test_namespace }}'
+          spec:
+            selector: {app: mesh-backend}
+            ports: [{name: http, port: 80, targetPort: 8080}]
+        - apiVersion: networking.istio.io/v1
+          kind: DestinationRule
+          metadata:
+            name: mesh-backend
+            namespace: '{{ test_namespace }}'
+          spec:
+            host: mesh-backend.{{ test_namespace }}.svc.cluster.local
+            trafficPolicy:
+              tls: {mode: ISTIO_MUTUAL}
+            subsets:
+              - name: v1
+                labels: {version: v1}
+              - name: v2
+                labels: {version: v2}
+        - apiVersion: networking.istio.io/v1
+          kind: VirtualService
+          metadata:
+            name: mesh-backend
+            namespace: '{{ test_namespace }}'
+          spec:
+            hosts: ['mesh-backend.{{ test_namespace }}.svc.cluster.local']
+            http:
+              - match:
+                  - headers:
+                      x-lab-version: {exact: v2}
+                route:
+                  - destination: {host: 'mesh-backend.{{ test_namespace }}.svc.cluster.local', subset: v2}
+              - route:
+                  - destination: {host: 'mesh-backend.{{ test_namespace }}.svc.cluster.local', subset: v1}
+        - apiVersion: security.istio.io/v1
+          kind: PeerAuthentication
+          metadata:
+            name: default
+            namespace: '{{ test_namespace }}'
+          spec:
+            mtls: {mode: STRICT}
+        - apiVersion: security.istio.io/v1
+          kind: AuthorizationPolicy
+          metadata:
+            name: deny-training-path
+            namespace: '{{ test_namespace }}'
+          spec:
+            selector:
+              matchLabels: {app: mesh-backend}
+            action: DENY
+            rules:
+              - to:
+                  - operation:
+                      paths: [/denied]
+        - apiVersion: networking.istio.io/v1
+          kind: Gateway
+          metadata:
+            name: mesh-training
+            namespace: '{{ test_namespace }}'
+          spec:
+            selector: {istio: ingressgateway}
+            servers:
+              - port: {number: 80, name: http, protocol: HTTP}
+                hosts: [mesh.training.local]
+        - apiVersion: networking.istio.io/v1
+          kind: VirtualService
+          metadata:
+            name: mesh-ingress
+            namespace: '{{ test_namespace }}'
+          spec:
+            hosts: [mesh.training.local]
+            gateways: [mesh-training]
+            http:
+              - route:
+                  - destination: {host: 'mesh-backend.{{ test_namespace }}.svc.cluster.local', subset: v1}
+- name: Create clients with an explicit sidecar-injection selection
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  loop: [meshed, plaintext]
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: '{{ item }}'
+        namespace: '{{ test_namespace }}'
+        annotations:
+          sidecar.istio.io/inject: '{{ "true" if item == "meshed" else "false" }}'
+      spec:
+        containers:
+          - name: client
+            image: docker.io/library/busybox:1.37.0
+            command: [sleep, '3600']
+            resources:
+              requests: {cpu: 10m, memory: 8Mi}
+              limits: {cpu: 100m, memory: 32Mi}
+- name: Wait for both service versions
+  ansible.builtin.command: kubectl rollout status deployment/mesh-{{ item }} -n {{ test_namespace }} --timeout=180s
+  loop: [v1, v2]
+  changed_when: false
+- name: Wait for both clients
+  ansible.builtin.command: kubectl wait pod/meshed pod/plaintext -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+  changed_when: false
+- name: Verify the default route reaches version one over mutual TLS
+  ansible.builtin.command: kubectl exec meshed -c client -n {{ test_namespace }} -- wget -T 5 -q -O- http://mesh-backend
+  register: ica_default_route
+  changed_when: false
+  until: ica_default_route.rc == 0 and ica_default_route.stdout | trim == 'mesh-v1'
+  retries: 12
+  delay: 3
+- name: Verify header routing reaches version two
+  ansible.builtin.command:
+    argv: [kubectl, exec, meshed, -c, client, -n, '{{ test_namespace }}', --, wget, -T, '5', -q, -O-, --header, 'x-lab-version: v2', 'http://mesh-backend']
+  register: ica_header_route
+  changed_when: false
+  until: ica_header_route.rc == 0 and ica_header_route.stdout | trim == 'mesh-v2'
+  retries: 12
+  delay: 3
+- name: Verify strict mutual TLS rejects the unmeshed client
+  ansible.builtin.command: kubectl exec plaintext -c client -n {{ test_namespace }} -- wget -T 5 -q -O- http://mesh-backend
+  register: ica_plaintext_request
+  changed_when: false
+  failed_when: ica_plaintext_request.rc == 0
+- name: Verify path authorization denies a meshed client
+  ansible.builtin.command: kubectl exec meshed -c client -n {{ test_namespace }} -- wget -T 5 -S -O- http://mesh-backend/denied
+  register: ica_denied_request
+  changed_when: false
+  failed_when: false
+- name: Require an authorization denial rather than an unrelated connection error
+  ansible.builtin.assert:
+    that:
+      - ica_denied_request.rc != 0
+      - "'403' in ica_denied_request.stderr"
+- name: Verify ingress delivers the routed service through the configured gateway
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.istio_http }}'
+    headers: {Host: mesh.training.local}
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: ica_ingress
+  until: ica_ingress.status == 200 and ica_ingress.content | trim == 'mesh-v1'
+  retries: 12
+  delay: 3
+- name: Verify the installed Bookinfo application through its gateway
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.istio_http }}/productpage'
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: ica_bookinfo
+  failed_when: ica_bookinfo.status != 200 or 'Simple Bookstore App' not in ica_bookinfo.content
+- name: Record the verified mesh behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks:
+      - automatic sidecar injection starts both workload versions and a meshed client
+      - default and header-based routes reach the declared subsets
+      - strict mutual TLS admits the meshed client and rejects plaintext
+      - authorization returns an explicit forbidden response for the denied path
+      - the gateway routes an external HTTP request to the selected service version
+      - the installed Bookinfo application responds through its gateway

@@ -1,0 +1,16 @@
+---
+- name: Require the dedicated Linux certification inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require LFCS and an isolated Linux guest
+      ansible.builtin.assert:
+        that:
+          - certification | default('') == 'lfcs'
+          - groups['linux_hosts'] | default([]) | length > 0
+          - groups['linux_hosts'] | intersect(groups['cluster_nodes'] | default([])) | length == 0
+- name: Prepare the Linux administration environment
+  import_playbook: hosts/linux_foundation.yml
+- name: Verify the Linux administration environment
+  import_playbook: ../tests/linux.yml

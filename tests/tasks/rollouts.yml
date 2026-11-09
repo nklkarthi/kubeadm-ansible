@@ -1,0 +1,20 @@
+---
+- name: Create active and preview services for a small blue-green rollout
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  loop: [active, preview]
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: Service
+      metadata: {name: 'delivery-{{ item }}', namespace: '{{ test_namespace }}'}
+      spec:
+        selector: {app: progressive-delivery}
+        ports: [{name: http, port: 80, targetPort: 8080}]
+- name: Apply and verify each progressive delivery revision in order
+  ansible.builtin.include_tasks: rollout_revision.yml
+  loop: [blue, green]
+  loop_control:
+    loop_var: delivery_revision
+- name: Record verified progressive delivery
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Rollouts promotes two blue-green revisions and switches actual service traffic"] }}'

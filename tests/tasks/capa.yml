@@ -1,0 +1,9 @@
+---
+- name: Verify Git-backed reconciliation and drift correction
+  ansible.builtin.include_tasks: cgoa.yml
+- name: Verify workflow execution
+  ansible.builtin.include_tasks: workflows.yml
+- name: Verify progressive delivery
+  ansible.builtin.include_tasks: rollouts.yml
+- name: Verify event-driven automation
+  ansible.builtin.include_tasks: events.yml

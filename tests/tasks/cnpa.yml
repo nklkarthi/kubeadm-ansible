@@ -1,0 +1,5 @@
+---
+- name: Verify GitOps delivery and reconciliation
+  ansible.builtin.include_tasks: cgoa.yml
+- name: Verify the developer catalog and self-service workflow
+  ansible.builtin.include_tasks: cba.yml

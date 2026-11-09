@@ -1,0 +1,46 @@
+---
+- name: Read cluster machine identities
+  hosts: '{{ cluster_hosts | default(''vbox_hosts'') }}'
+  become: true
+  tasks:
+    - name: Read machine ID
+      ansible.builtin.slurp:
+        src: /etc/machine-id
+      register: cluster_machine_id
+  vars_files:
+    - ../vars/common.yml
+- name: Give cloned workers unique persistent machine identities
+  hosts: '{{ worker_hosts | default(''vbox_workers'') }}'
+  become: true
+  tasks:
+    - name: Compare worker identity to the other cluster nodes
+      ansible.builtin.set_fact:
+        duplicate_machine_id: false
+    - name: Detect duplicate machine ID
+      ansible.builtin.set_fact:
+        duplicate_machine_id: true
+      loop: '{{ groups[cluster_hosts | default(''vbox_hosts'')] | difference([inventory_hostname]) }}'
+      when: cluster_machine_id.content == hostvars[item].cluster_machine_id.content
+    - name: Generate a fresh machine ID for a clone
+      ansible.builtin.command: systemd-id128 new
+      register: fresh_machine_id
+      changed_when: false
+      when: duplicate_machine_id
+      check_mode: false
+    - name: Persist a unique ID and keep a backup of the previous ID
+      ansible.builtin.copy:
+        dest: /etc/machine-id
+        content: |
+          {{ fresh_machine_id.stdout }}
+        owner: root
+        group: root
+        mode: '0444'
+        backup: true
+      when: duplicate_machine_id
+    - name: Report reboot requirement
+      ansible.builtin.debug:
+        msg: Machine identity changed. Systemd and DHCP fully adopt it on the next reboot. Reserve the inventory
+          IP for this VM's MAC before rebooting.
+      when: duplicate_machine_id
+  vars_files:
+    - ../vars/common.yml

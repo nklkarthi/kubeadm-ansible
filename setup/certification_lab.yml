@@ -1,0 +1,3 @@
+---
+- name: Select the Linux or Kubernetes certification environment
+  import_playbook: "{{ 'linux_certification.yml' if certification | default('') == 'lfcs' else 'kubernetes_certification.yml' }}"

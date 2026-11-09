@@ -1,0 +1,84 @@
+---
+- name: Install a pinned Argo CD release without deleting applications
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    argocd_version: '{{ argocd_release | default(tool_versions.argocd) }}'
+    addon_namespace: '{{ argocd_namespace | default(''argocd'') }}'
+    tool_name: Argo CD 3.6
+    tool_kubernetes_min: 1.34.0
+    tool_kubernetes_max: 1.38.0
+    argocd_http_port: '{{ argocd_nodeport | default(lab_nodeports.argocd_http) | int }}'
+    argocd_https_port: '{{ argocd_tls_nodeport | default(lab_nodeports.argocd_https) | int }}'
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Validate the reviewed Argo CD release line and NodePorts
+      ansible.builtin.assert:
+        that:
+          - argocd_version is match('^v3\.6\.')
+          - argocd_http_port | int >= 30000
+          - argocd_https_port | int <= 32767
+          - argocd_http_port | int != argocd_https_port | int
+    - name: Run tasks/namespace.yml
+      ansible.builtin.import_tasks: ../tasks/namespace.yml
+    - name: Run tasks/download_apply.yml
+      ansible.builtin.import_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
+        manifest_checksum: '{{ manifest_checksums.argocd }}'
+        manifest_name: argocd-{{ argocd_version }}
+        manifest_source_namespace: argocd
+        manifest_patches:
+          - kind: Deployment
+            name: argocd-server
+            value:
+              spec:
+                template:
+                  metadata:
+                    annotations:
+                      kubeadm-lab/server-insecure: '{{ (argocd_insecure_http | default(false) | bool) | ternary("true",
+                        "false") }}'
+          - kind: ConfigMap
+            name: argocd-cmd-params-cm
+            value:
+              data:
+                server.insecure: '{{ (argocd_insecure_http | default(false) | bool) | ternary(''true'', ''false'')
+                  }}'
+          - kind: Service
+            name: argocd-server
+            value:
+              spec:
+                type: NodePort
+                ports:
+                  - name: http
+                    port: 80
+                    targetPort: 8080
+                    nodePort: '{{ argocd_http_port | int }}'
+                  - name: https
+                    port: 443
+                    targetPort: 8080
+                    nodePort: '{{ argocd_https_port | int }}'
+    - name: Wait for deployment/argocd-server
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/argocd-server
+          - -n
+          - '{{ addon_namespace }}'
+          - --timeout=300s
+      changed_when: false
+    - name: Show the endpoint and credential retrieval command
+      ansible.builtin.debug:
+        msg: 'Argo CD: {{ ''http'' if argocd_insecure_http | default(false) | bool else ''https'' }}://{{ ansible_host
+          | default(inventory_hostname) }}:{{ argocd_http_port if argocd_insecure_http | default(false) | bool
+          else argocd_https_port }}. Retrieve the initial admin secret with kubectl -n {{ addon_namespace }}
+          get secret argocd-initial-admin-secret; it is not printed by Ansible.'
+  vars_files:
+    - ../vars/common.yml

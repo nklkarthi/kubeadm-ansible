@@ -1,0 +1,133 @@
+---
+- name: Reconcile monitoring through an Argo CD Application
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    tool_name: kube-prometheus-stack chart 93.1.0
+    tool_kubernetes_min: 1.25.0
+    tool_kubernetes_max: 1.38.0
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Require the Argo CD application CRD
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - crd
+          - applications.argoproj.io
+      changed_when: false
+    - name: Reconcile the kube-prometheus-stack Argo CD application
+      ansible.builtin.include_tasks: ../tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: kube-prometheus-stack
+            namespace: '{{ argocd_namespace | default("argocd") }}'
+          spec:
+            project: default
+            source:
+              repoURL: https://prometheus-community.github.io/helm-charts
+              chart: kube-prometheus-stack
+              targetRevision: '{{ prometheus_chart_version | default(tool_versions.prometheus_stack) }}'
+              helm:
+                valuesObject:
+                  grafana:
+                    sidecar:
+                      resources:
+                        requests: {cpu: 10m, memory: 16Mi}
+                        limits: {cpu: 100m, memory: 128Mi}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits: {cpu: 500m, memory: 512Mi}
+                    service:
+                      type: NodePort
+                      nodePort: '{{ lab_nodeports.grafana | int }}'
+                  prometheus:
+                    prometheusSpec:
+                      retention: 6h
+                      retentionSize: 256MB
+                      resources:
+                        requests: {cpu: 100m, memory: 256Mi}
+                        limits: {cpu: '1', memory: 1Gi}
+                    service:
+                      type: NodePort
+                      nodePort: '{{ lab_nodeports.prometheus | int }}'
+                  alertmanager:
+                    alertmanagerSpec:
+                      resources:
+                        requests: {cpu: 10m, memory: 32Mi}
+                        limits: {cpu: 250m, memory: 256Mi}
+                    service:
+                      type: NodePort
+                      nodePort: '{{ lab_nodeports.alertmanager | int }}'
+                  prometheusOperator:
+                    resources:
+                      requests: {cpu: 25m, memory: 64Mi}
+                      limits: {cpu: 500m, memory: 256Mi}
+                    prometheusConfigReloader:
+                      resources:
+                        requests: {cpu: 10m, memory: 16Mi}
+                        limits: {cpu: 100m, memory: 64Mi}
+                  kube-state-metrics:
+                    resources:
+                      requests: {cpu: 25m, memory: 64Mi}
+                      limits: {cpu: 250m, memory: 256Mi}
+                  prometheus-node-exporter:
+                    resources:
+                      requests: {cpu: 10m, memory: 16Mi}
+                      limits: {cpu: 100m, memory: 64Mi}
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: monitoring
+            syncPolicy:
+              automated:
+                prune: false
+                selfHeal: true
+              syncOptions:
+                - ServerSideApply=true
+                - CreateNamespace=true
+        manifest_private: false
+      when: not ansible_check_mode
+    - name: Wait for kube-prometheus-stack to reconcile the selected chart revision
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - application/kube-prometheus-stack
+          - -n
+          - '{{ argocd_namespace | default("argocd") }}'
+          - --for=jsonpath={.status.sync.revision}={{ prometheus_chart_version | default(tool_versions.prometheus_stack)
+            }}
+          - --timeout=600s
+      changed_when: false
+    - name: Wait for kube-prometheus-stack synchronization
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - application/kube-prometheus-stack
+          - -n
+          - '{{ argocd_namespace | default("argocd") }}'
+          - --for=jsonpath={.status.sync.status}=Synced
+          - --timeout=600s
+      changed_when: false
+    - name: Wait for kube-prometheus-stack health
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - application/kube-prometheus-stack
+          - -n
+          - '{{ argocd_namespace | default("argocd") }}'
+          - --for=jsonpath={.status.health.status}=Healthy
+          - --timeout=600s
+      changed_when: false
+  vars_files:
+    - ../vars/common.yml

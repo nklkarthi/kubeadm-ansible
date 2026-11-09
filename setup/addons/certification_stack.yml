@@ -1,0 +1,30 @@
+---
+- name: Install the explicitly selected syllabus components
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Require a known component selection
+      ansible.builtin.assert:
+        that: certification_addons | default([]) | difference(native_stack_components + ['apparmor','gvisor','falco','metrics','kube_bench','argocd','istio','bookinfo','monitoring'])
+          | length == 0
+    - name: Install selected components in dependency order
+      ansible.builtin.include_tasks: ../tasks/addons/{{ stack_component }}.yml
+      loop: '{{ certification_addons | default([]) | select("in", native_stack_components) | list }}'
+      loop_control:
+        loop_var: stack_component
+  vars:
+    native_stack_components:
+      - audit
+      - storage
+      - traefik
+      - workflows
+      - rollouts
+      - events
+      - otel
+      - kyverno
+      - backstage
+      - crossplane

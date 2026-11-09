@@ -23,3 +23,15 @@ id_*
 # OS files
 .DS_Store
 Thumbs.db
+# Local cluster administrator credentials
+/artifacts/
+
+# Controller environments and private travel inventory
+.venv/
+__pycache__/
+*.pyc
+/inventories/pluralsight.ini
+
+# Pinned controller binaries
+/.tools/
+/.vagrant/

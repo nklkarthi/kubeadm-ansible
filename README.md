@@ -1,194 +1,263 @@
-# Kubeadm Ansible
+# kubeadm-ansible
 
-This repository contains Ansible playbooks to set up a Kubernetes cluster using `kubeadm`. All playbooks are designed to be reusable across different cloud environments and user configurations.
+Create Ubuntu Kubernetes labs from a macOS or WSL Ansible controller. Use the
+home inventory or a separate Pluralsight inventory while travelling.
 
-## Prerequisites
+## Requirements
 
-*   Ansible installed on your local machine.
-*   An SSH key pair. This guide assumes you have a key at `~/.ssh/id_acg.pub`.
-*   Three servers with a user account (default: `cloud_user`).
+- Controller: macOS or WSL, Python 3.12–3.14, Ansible, and `kubectl`.
+- Guests: Ubuntu 22.04 or newer, unique hostnames/MACs, SSH access, and sudo.
+- Home VMs: Ubuntu 24.04 LTS, 2 CPUs and 4 GB RAM per node.
+- Guest addresses must be stable and reachable from each other and the controller.
+- Pod and service networks must not overlap the guest networks.
+- The controller-tools playbook prepares pinned Helm and registry clients when needed.
+- Home VM management uses Vagrant and Homebrew, with native Hyper-V on Windows
+  or VirtualBox on macOS.
 
-## Configuration Variables
-
-The playbooks support the following variables for customization:
-
-- `target_user`: User account name (default: `cloud_user`)
-- `timezone`: System timezone (default: `UTC`)
-- `gitea_target_host`: Specific host for Gitea installation (default: second worker node)
-
-### Example with custom variables:
-```bash
-ansible-playbook -i setup/inventory setup/playbook.yml \
-  -e "target_user=ubuntu" \
-  -e "timezone=America/New_York"
-```
-
-## SSH Setup
-
-Copy your SSH public key to each of the servers. Replace hostnames and user as needed for your environment.
+Install the controller tools in a virtual environment:
 
 ```bash
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-master-node.com
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-worker1-node.com
-ssh-copy-id -i ~/.ssh/id_acg.pub cloud_user@your-worker2-node.com
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
 ```
 
-## Inventory Configuration
+Ubuntu controllers need the matching `python3.14-venv` package for the standard
+`venv` command. Activate `.venv` before running validation or deployment.
 
-Update `setup/inventory` with your server hostnames:
+## Repository layout
 
-```ini
-[cloud_servers]
-your-master-node.com ansible_user=cloud_user
-your-worker1-node.com ansible_user=cloud_user
-your-worker2-node.com ansible_user=cloud_user
+- `setup/kube_cluster.yml`: base-cluster entry point.
+- `Vagrantfile`, `setup/hosts/vagrant.yml`: local VM definitions and lifecycle.
+- `setup/cluster/`: bootstrap, CNI, credentials, and cluster verification.
+- `setup/addons/`: opt-in applications and certification tools.
+- `setup/security/`: opt-in host and runtime security tools.
+- `setup/hosts/`: firewall, accounts, shell tools, and clone identity.
+- `setup/maintenance/`: status, drain/recovery, reset, and disk cleanup.
+- `setup/tasks/`, `setup/templates/`, `setup/vars/`: shared implementation and version pins.
+- `inventories/`, `profiles/`: environment inventory examples and version overrides.
+- `tests/`: local task tests and an explicit live network test.
 
-[master]
-your-master-node.com ansible_user=cloud_user
+## Choose an environment
 
-[workers]
-your-worker1-node.com ansible_user=cloud_user
-your-worker2-node.com ansible_user=cloud_user
-```
+### Home lab
 
-## Ansible Setup
+Edit `setup/inventory`. The default groups are `vbox_hosts`, `vbox_master`, and
+`vbox_workers`. The account is `vboxuser`; the timezone is `Asia/Singapore`.
+Vagrant provisions the account with the private SSH identity generated under
+`artifacts/vagrant/`; the inventory uses that identity for Ansible.
+The canonical `cluster_nodes`, `control_plane`, and `worker_nodes` groups map
+to these home groups; the cloud inventory maps them to its own hosts.
 
-Run the following Ansible playbooks in order to provision the servers and set up the Kubernetes cluster.
+Connect from the repository root in WSL or macOS with the shared lab key:
 
-1.  **Visudoers:** This playbook configures sudo access for the `cloud_user`.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/visudoers.yml --ask-become-pass
-    ```
-
-2.  **Bash-it:** This playbook installs and configures Bash-it, a shell framework.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/bash-it.yml
-    ```
-
-3.  **fzf:** This playbook installs and configures fzf, a command-line fuzzy finder.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/fzf.yml
-    ```
-
-4.  **Firewall:** This playbook configures the firewall on the servers.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/firewall.yml
-    ```
-
-5.  **Kube Dependencies:** This playbook installs the dependencies required for Kubernetes.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/kube_dependencies.yml
-    ```
-
-6.  **Kube Master:** This playbook initializes the Kubernetes master node.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/kube_master.yml
-    ```
-
-7.  **Kube Workers:** This playbook joins the worker nodes to the cluster.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/kube_workers.yml
-    ```
-
-8.  **Gitea (Optional):** This playbook installs Gitea on worker node 737f3fac482c.mylabserver.com.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/gitea.yml
-    ```
-
-9.  **Get Internal IPs (Utility):** Get internal IP addresses for ArgoCD integration.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/get-internal-ips.yml
-    ```
-
-10. **Gitea Webhook Fix (Optional):** Configure webhooks for existing Gitea installations.
-
-    ```bash
-    ansible-playbook -i setup/inventory setup/gitea-webhook-fix.yml
-    ```
-
-## Cluster Maintenance (4-Hour Window Management)
-
-For environments with 4-hour operational windows:
-
-11. **Before Shutdown:** Drain nodes gracefully before the 4-hour limit.
-
-    ```bash
-    # Drain all worker nodes
-    ansible-playbook -i setup/inventory setup/node-shutdown.yml
-    
-    # Drain specific nodes
-    ansible-playbook -i setup/inventory setup/node-shutdown.yml -e "target_nodes=specific-node"
-    ```
-
-12. **After Startup:** Uncordon nodes to make them schedulable again.
-
-    ```bash
-    # Uncordon all worker nodes
-    ansible-playbook -i setup/inventory setup/node-startup.yml
-    
-    # Uncordon specific nodes
-    ansible-playbook -i setup/inventory setup/node-startup.yml -e "target_nodes=specific-node"
-    ```
-
-13. **Unified Maintenance:** Single playbook for all maintenance operations.
-
-    ```bash
-    # Check cluster status
-    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=status"
-    
-    # Prepare for shutdown
-    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=shutdown"
-    
-    # Recover after startup
-    ansible-playbook -i setup/inventory setup/cluster-maintenance.yml -e "action=startup"
-    ```
-
-## Services
-
-- **Kubernetes Cluster**: Master node with worker nodes ready for deployments
-- **Gitea**: Git service with web interface accessible on port 3000 (if installed)
-
-## Access Information
-
-- **Kubernetes**: Use `kubectl` from the master node
-- **Gitea**: Access via `http://[gitea-host]:3000` (if installed)
-
-## ArgoCD Integration
-
-When integrating Gitea with ArgoCD:
-
-1. **Get internal IP**: Run `ansible-playbook -i setup/inventory setup/get-internal-ips.yml`
-2. **Use internal IP address** in ArgoCD repository configuration
-3. **Repository URL format**: `http://[internal-ip]:3000/username/repo.git`
-4. **Why**: ArgoCD pods need direct internal network access, external hostnames cause routing timeouts
-
-### Quick Commands:
 ```bash
-# Get the internal IP for ArgoCD
-ansible-playbook -i setup/inventory setup/get-internal-ips.yml
-
-# Fix webhook permissions (if needed)
-ansible-playbook -i setup/inventory setup/gitea-webhook-fix.yml
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.32  # master
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.34  # worker-01
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.35  # worker-02
 ```
 
-### Webhook Configuration:
-The Gitea installation automatically configures webhooks to allow the internal network (172.31.0.0/16). This enables ArgoCD to receive webhook notifications from Gitea repositories.
+The VM must be running before SSH can connect. Windows home VMs appear in
+**Hyper-V Manager** with names beginning `kubeadm-`; macOS VirtualBox-provider
+VMs appear in **VirtualBox Manager**. Vagrant uses the same guest account and key
+for managed SSH access.
 
-## Reusability for New Cloud Environments
+```bash
+ansible-playbook setup/hosts/vagrant.yml
+ansible vbox_hosts -m ansible.builtin.ping
+ansible-playbook setup/kube_cluster.yml
+```
 
-These playbooks are designed to work with temporary cloud servers (e.g., 14-day lab environments). When you get new servers:
+The Vagrant playbook creates the three main nodes in order and checks their OS,
+CPU count, RAM, and inventory addresses. New guests are rebooted after provisioning
+to check persistent configuration. Additional certification VMs remain stopped
+until selected explicitly.
 
-1. Update the `setup/inventory` file with new hostnames
-2. Run the same playbooks without modification
-3. Use variables to customize user accounts and settings as needed
+`scripts/vagrant.sh` installs Vagrant through Homebrew when necessary. On WSL,
+it uses native Hyper-V and stages the Vagrantfile and provider state under
+`%USERPROFILE%\Vagrant\kubeadm-ansible`. The shared Ansible private key stays in
+WSL. VM disks stay on Windows. Hyper-V uses DHCP for first boot, then persists the
+inventory address, gateway and DNS for subsequent boots. Reserve those static
+addresses outside the router's DHCP pool. macOS uses VirtualBox and defaults to the `en0`
+bridge; override `VAGRANT_LAB_BRIDGE` for a different adapter.
 
-No hardcoded values will break when switching to new cloud servers.
+On Windows, run `scripts/hyperv_setup.ps1` in an administrator PowerShell session
+once to enable Hyper-V, grant the current user Hyper-V management access, and
+create the external `kubeadm-lab` switch. Windows may require a restart. Use a new
+Windows sign-in after group membership changes, or run the Vagrant lifecycle
+from an administrator session.
+
+To prepare Hyper-V and run VM provisioning, CPU checks, and the base cluster in
+one administrator session, use PowerShell with this checkout's WSL path:
+
+```powershell
+& '\\wsl.localhost\Ubuntu\home\nklkarthi\github.com\nklkarthi\kubeadm-ansible\scripts\hyperv_setup.ps1' `
+  -StartLab -WslDistribution Ubuntu -LinuxUser nklkarthi `
+  -LabRepository /home/nklkarthi/github.com/nklkarthi/kubeadm-ansible
+```
+
+Adjust the distribution, Linux user and checkout path on another controller.
+If the script reports `restart-required`, restart Windows and repeat it.
+
+```bash
+ansible-playbook setup/hosts/vagrant.yml -e vagrant_state=status
+ansible-playbook setup/hosts/vagrant.yml -e vagrant_state=stopped
+ansible-playbook setup/hosts/vagrant.yml -e '{"vagrant_nodes":["ha-01","ha-02"]}'
+```
+
+Shared folders are disabled and the VMs use linked clones. Keep the pinned base
+box while those clones exist. `vagrant_state=absent` destroys only the explicitly
+selected machines in this Vagrant project.
+
+### Pluralsight lab
+
+```bash
+cp inventories/pluralsight.ini.example inventories/pluralsight.ini
+```
+
+Replace the example hostnames with the current lab servers. This inventory uses
+`cloud_user`, selects the `cloud_servers`, `master`, and `workers` groups, and
+keeps a separate `pluralsight-kubeadm` context. The private inventory is gitignored.
+
+```bash
+ansible -i inventories/pluralsight.ini cloud_servers -m ansible.builtin.ping
+ansible-playbook -i inventories/pluralsight.ini setup/kube_cluster.yml --ask-become-pass
+```
+
+Set `control_plane_endpoint=HOST:6443` when the Kubernetes API should use a
+particular reachable hostname. Set each host's `node_ip` when its default network
+interface is not the cluster interface. The endpoint must be chosen before init
+so kubeadm includes it in the server certificate.
+
+## Kubernetes versions
+
+The default minor is 1.37 with Calico. Version pins are in
+[setup/vars/common.yml](setup/vars/common.yml). See
+[compatibility](docs/compatibility.md) before selecting add-ons.
+
+For a **new** Kubernetes 1.36 lab that can also use the pinned Cilium,
+cert-manager, and Rancher releases:
+
+```bash
+ansible-playbook -i inventories/pluralsight.ini setup/kube_cluster.yml \
+  -e @profiles/kubernetes-1.36.yml --ask-become-pass
+```
+
+Bootstrap does not upgrade or downgrade an existing Kubernetes minor. Kubernetes
+packages are held against unattended upgrades. Use the upstream kubeadm upgrade
+procedure for an existing cluster.
+
+## Access the selected cluster
+
+Bootstrap fetches the current credentials, preserves other contexts, and selects
+`vbox-kubeadm` or `pluralsight-kubeadm`. To refresh credentials after rebuilding:
+
+```bash
+ansible-playbook setup/cluster/fetch-kubeconfig.yml
+kubectl get nodes
+kubectl get pods -A
+kubectl config get-contexts
+```
+
+Pass the cloud inventory to the fetch playbook when using Pluralsight. Set
+`local_kube_context` to keep additional labs under distinct names. Set
+`local_kubeconfig` for a destination other than `~/.kube/config`; if `KUBECONFIG`
+is set in your shell, ensure it selects that file. Credentials in `artifacts/`
+and the local kubeconfig are private and must not be committed.
+
+## Optional playbooks
+
+Pass the selected inventory to each command. Install only the tools needed for
+the current exercise; follow the dependency order in [certification labs](docs/certifications.md).
+The base cluster installs no certification add-ons. A fresh bootstrap with two
+workers also runs temporary DNS and service-connectivity tests. Request these
+on a later bootstrap run with `-e verify_network=true`.
+
+| Playbook | Purpose |
+| --- | --- |
+| `setup/hosts/visudoers.yml` | Lab sudo access and timezone |
+| `setup/hosts/bash-it.yml`, `setup/hosts/fzf.yml` | Guest shell tools |
+| `setup/cluster/cni_install.yml` | Calico or Cilium; refuses to replace a different CNI |
+| `setup/addons/argocd_install.yml` | Argo CD with TLS and dedicated NodePorts |
+| `setup/addons/gitea.yml` | Gitea on the first worker, or `gitea_target_host` |
+| `setup/addons/prometheus_stack_simple.yml` | Monitoring through an Argo CD Application |
+| `setup/addons/istio_install.yml` | Istio and its ingress gateway |
+| `setup/addons/bookinfo_deploy.yml` | Matching Bookinfo sample |
+| `setup/addons/istio_addons.yml` | Matching demonstration dashboards |
+| `setup/addons/certification_addons.yml` | Opt-in metrics-server and kube-bench |
+| `setup/security/apparmor.yml` | AppArmor and seccomp profile directory |
+| `setup/security/gvisor.yml` | gVisor and its RuntimeClass |
+| `setup/security/falco_install.yml` | Falco runtime security |
+| `setup/addons/rancher_install.yml` | Rancher on a compatible lab management cluster |
+| `setup/addons/ingress_nginx.yml` | Historical ingress-nginx exercises only |
+| `setup/maintenance/get-internal-ips.yml` | Selected guest addresses |
+| `setup/hosts/repair_clone_identity.yml` | Unique machine IDs for cloned workers |
+
+Examples:
+
+```bash
+ansible-playbook setup/addons/certification_addons.yml -e install_metrics_server=true
+ansible-playbook setup/addons/certification_addons.yml -e install_kube_bench=true
+ansible-playbook setup/cluster/verify_cluster.yml
+```
+
+Metrics-server's lab-only insecure kubelet TLS flag requires
+`-e metrics_server_insecure_tls=true`. Argo CD uses HTTPS by default; retrieving
+its initial admin secret is a separate `kubectl` operation. Rancher requires an
+explicit `rancher_host` and `bootstrap_password`; use Ansible Vault for secrets.
+Gitea upgrades require a database backup and `allow_gitea_upgrade=true`.
+
+NodePorts are allocated centrally in `setup/vars/common.yml`. Istio uses 30088
+for HTTP and 30444 for HTTPS; Argo CD uses 30080 and 30443. The two monitoring
+options have distinct dashboard ports.
+
+## Disk usage
+
+Guest Git clones use shallow history. `setup/hosts/fzf.yml` uses the Ubuntu package and
+migrates clean upstream fzf clones. Versioned installer archives are removed
+after extraction. Run cleanup after image imports or package installation:
+
+```bash
+ansible-playbook setup/maintenance/space_cleanup.yml
+```
+
+Cleanup preserves workloads and containerd data. Add
+`-e prune_unused_images=true` only when unused images can be downloaded again.
+
+## Maintenance
+
+```bash
+ansible-playbook setup/maintenance/cluster-maintenance.yml -e action=status
+ansible-playbook setup/maintenance/cluster-maintenance.yml -e action=shutdown
+ansible-playbook setup/maintenance/cluster-maintenance.yml -e action=startup
+```
+
+Drain respects disruption budgets and stops on failure. Set
+`drain_delete_emptydir_data=true` or `drain_force=true` only when required by the
+exercise. `target_nodes` accepts inventory addresses or Kubernetes hostnames.
+
+`setup/maintenance/kube_reset.yml` resets the selected cluster. It does not erase the whole
+containerd store; optional unused-image pruning uses `reset_prune_images=true`.
+Reserve inventory addresses by MAC before changing cloned machine identities.
+
+## Validation
+
+```bash
+sh scripts/validate_playbooks.sh
+```
+
+The validator checks both inventory profiles, lints the playbooks, and tests
+manifest overrides, runtime configuration, and kubeconfig isolation with
+temporary local files. It does
+not deploy optional applications. Run `setup/cluster/verify_cluster.yml` for live base
+cluster checks. To test DNS and cross-worker service traffic with temporary
+BusyBox pods, run:
+
+```bash
+ansible-playbook tests/cluster_network.yml
+ansible-playbook tests/cluster_runtime.yml
+```
+
+The network test requires two workers and removes its temporary namespace.
+The runtime test uses a temporary guest configuration and leaves the running
+service untouched.

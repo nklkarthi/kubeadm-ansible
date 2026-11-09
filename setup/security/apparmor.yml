@@ -1,0 +1,41 @@
+---
+- name: Enable AppArmor and prepare custom seccomp profiles
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  tasks:
+    - name: Install AppArmor tools
+      ansible.builtin.apt:
+        name:
+          - apparmor
+          - apparmor-utils
+          - apparmor-profiles
+          - apparmor-profiles-extra
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Enable AppArmor service
+      ansible.builtin.systemd_service:
+        name: apparmor
+        state: started
+        enabled: true
+    - name: Check kernel AppArmor activation
+      ansible.builtin.slurp:
+        src: /sys/module/apparmor/parameters/enabled
+      register: apparmor_enabled
+    - name: Require kernel AppArmor support without replacing unrelated GRUB arguments
+      ansible.builtin.assert:
+        that: (apparmor_enabled.content | b64decode | trim) == 'Y'
+        fail_msg: AppArmor is disabled in the running kernel. Review boot arguments and reboot explicitly;
+          this playbook preserves existing GRUB settings.
+    - name: Create the kubelet seccomp profile directory
+      ansible.builtin.file:
+        path: /var/lib/kubelet/seccomp/profiles
+        state: directory
+        mode: '0755'
+    - name: Report loaded AppArmor profiles
+      ansible.builtin.command:
+        argv:
+          - aa-status
+      changed_when: false
+  vars_files:
+    - ../vars/common.yml

@@ -1,0 +1,138 @@
+---
+- name: Deploy a small declarative application
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: app-settings
+            namespace: "{{ test_namespace }}"
+          data:
+            message: cloud-native-lab
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: web
+            namespace: "{{ test_namespace }}"
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: certification-web
+            template:
+              metadata:
+                labels:
+                  app: certification-web
+              spec:
+                automountServiceAccountToken: false
+                containers:
+                  - name: web
+                    image: docker.io/library/busybox:1.37.0
+                    command:
+                      - sh
+                      - -c
+                      - mkdir -p /www && echo "$MESSAGE" > /www/index.html && echo application-started && exec httpd -f -p 8080 -h /www
+                    env:
+                      - name: MESSAGE
+                        valueFrom:
+                          configMapKeyRef:
+                            name: app-settings
+                            key: message
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 8Mi
+                      limits:
+                        cpu: 100m
+                        memory: 32Mi
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 8080
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: web
+            namespace: "{{ test_namespace }}"
+          spec:
+            selector:
+              app: certification-web
+            ports:
+              - port: 80
+                targetPort: 8080
+        - apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: batch
+            namespace: "{{ test_namespace }}"
+          spec:
+            template:
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                containers:
+                  - name: batch
+                    image: docker.io/library/busybox:1.37.0
+                    command:
+                      - sh
+                      - -c
+                      - echo batch-completed
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 8Mi
+                      limits:
+                        cpu: 100m
+                        memory: 32Mi
+- name: Wait for the application controller to make both replicas available
+  ansible.builtin.command: kubectl rollout status deployment/web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Verify the application configuration and service discovery
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://web.{{ test_namespace }}.svc.cluster.local
+  register: kcna_response
+  changed_when: false
+- name: Require the configured application response
+  ansible.builtin.assert:
+    that: kcna_response.stdout | trim == 'cloud-native-lab'
+- name: Read the currently managed pods
+  ansible.builtin.command: kubectl get pods -n {{ test_namespace }} -l app=certification-web -o json
+  register: kcna_original_pods
+  changed_when: false
+- name: Exercise controller self-healing by removing one disposable application pod
+  ansible.builtin.command: kubectl delete pod {{ (kcna_original_pods.stdout | from_json)['items'][0].metadata.name }} -n {{ test_namespace }} --wait=true
+  changed_when: true
+- name: Wait for replacement replicas
+  ansible.builtin.command: kubectl rollout status deployment/web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Read the replacement pod identities
+  ansible.builtin.command: kubectl get pods -n {{ test_namespace }} -l app=certification-web -o json
+  register: kcna_replacement_pods
+  changed_when: false
+- name: Require a new pod identity after reconciliation
+  ansible.builtin.assert:
+    that:
+      - (kcna_replacement_pods.stdout | from_json)['items'] | length == 2
+      - (kcna_original_pods.stdout | from_json)['items'][0].metadata.uid not in ((kcna_replacement_pods.stdout | from_json)['items'] |
+        map(attribute='metadata.uid') | list)
+- name: Wait for the batch workload
+  ansible.builtin.command: kubectl wait job/batch -n {{ test_namespace }} --for=condition=Complete --timeout=180s
+  changed_when: false
+- name: Read application output
+  ansible.builtin.command: kubectl logs job/batch -n {{ test_namespace }}
+  register: kcna_job_logs
+  changed_when: false
+- name: Require successful batch output
+  ansible.builtin.assert:
+    that: kcna_job_logs.stdout | trim == 'batch-completed'
+- name: Record completed functional checks
+  ansible.builtin.set_fact:
+    certification_completed_checks:
+      - declarative deployment and replica readiness
+      - ConfigMap injection into a running container
+      - service discovery and HTTP connectivity
+      - controller self-healing after pod deletion
+      - batch workload completion and log retrieval

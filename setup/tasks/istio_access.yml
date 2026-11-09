@@ -1,0 +1,11 @@
+---
+- name: Read the installed mesh control plane
+  ansible.builtin.command: kubectl get deployment istiod -n istio-system -o json
+  register: sample_mesh
+  changed_when: false
+  check_mode: false
+- name: Require the samples to match the installed mesh release
+  ansible.builtin.assert:
+    that:
+      - (sample_mesh.stdout | from_json).spec.template.spec.containers | map(attribute='image') | select('search', ':' ~ istio_version ~ '$') | list | length > 0
+    fail_msg: Run the Istio installer with the selected istio_release before deploying its samples.

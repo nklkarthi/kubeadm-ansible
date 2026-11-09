@@ -1,0 +1,35 @@
+---
+- name: Create the Argo events namespace
+  ansible.builtin.include_tasks: ../namespace.yml
+  vars:
+    addon_namespace: argo-events
+- name: Install the pinned Argo events components
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: argo-events
+    manifest_name: events-{{ tool_versions.argo_events }}
+    manifest_url: https://raw.githubusercontent.com/argoproj/argo-events/{{ tool_versions.argo_events }}/manifests/install.yaml
+    manifest_patches:
+      - kind: Deployment
+        name: controller-manager
+        container_resources:
+          controller-manager:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+- name: Wait for the Argo events controllers
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - deployment/{{ item }}
+      - -n
+      - argo-events
+      - --timeout=600s
+  loop:
+    - controller-manager
+  changed_when: false

@@ -1,0 +1,78 @@
+---
+- name: Install fzf for interactive guest shells
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  tasks:
+    - name: Install the Ubuntu fzf package
+      ansible.builtin.apt:
+        name: fzf
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Check for the former Git-based fzf installation
+      ansible.builtin.stat:
+        path: '{{ fzf_home }}/.fzf/.git'
+      register: fzf_git
+    - name: Migrate a clean upstream fzf checkout to the distribution package
+      when: fzf_git.stat.exists
+      block:
+        - name: Read the former fzf origin
+          ansible.builtin.command:
+            argv:
+              - git
+              - -C
+              - '{{ fzf_home }}/.fzf'
+              - remote
+              - get-url
+              - origin
+          register: fzf_origin
+          changed_when: false
+          become_user: '{{ fzf_user }}'
+          become: true
+        - name: Check for personal changes in the former fzf checkout
+          ansible.builtin.command:
+            argv:
+              - git
+              - -C
+              - '{{ fzf_home }}/.fzf'
+              - status
+              - --porcelain
+          register: fzf_changes
+          changed_when: false
+          become_user: '{{ fzf_user }}'
+          become: true
+        - name: Preserve customized or non-upstream checkouts
+          ansible.builtin.assert:
+            that:
+              - fzf_origin.stdout in ['https://github.com/junegunn/fzf.git', 'https://github.com/junegunn/fzf']
+              - fzf_changes.stdout | length == 0
+            fail_msg: The old fzf checkout has personal changes or a different origin; migrate it explicitly.
+        - name: Remove the superseded clean fzf checkout
+          ansible.builtin.file:
+            path: '{{ fzf_home }}/.fzf'
+            state: absent
+    - name: Remove the former generated fzf source line
+      ansible.builtin.lineinfile:
+        path: '{{ fzf_home }}/.bashrc'
+        regexp: ^\[ -f ~/.fzf.bash \] && source ~/.fzf.bash$
+        state: absent
+      become_user: '{{ fzf_user }}'
+      become: true
+    - name: Enable distribution-provided fzf shell integration
+      ansible.builtin.blockinfile:
+        path: '{{ fzf_home }}/.bashrc'
+        marker: '# {mark} ANSIBLE MANAGED FZF'
+        block: |
+          if fzf --bash >/dev/null 2>&1; then
+            eval "$(fzf --bash)"
+          else
+            [ ! -f /usr/share/doc/fzf/examples/key-bindings.bash ] || source /usr/share/doc/fzf/examples/key-bindings.bash
+            [ ! -f /usr/share/doc/fzf/examples/completion.bash ] || source /usr/share/doc/fzf/examples/completion.bash
+          fi
+      become_user: '{{ fzf_user }}'
+      become: true
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    fzf_user: '{{ target_user | default(ansible_user | default(''vboxuser'')) }}'
+    fzf_home: /home/{{ fzf_user }}

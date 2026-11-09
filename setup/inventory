@@ -1,11 +1,37 @@
-[cloud_servers]
-737f3fac481c.mylabserver.com ansible_user=cloud_user
-737f3fac482c.mylabserver.com ansible_user=cloud_user
-737f3fac483c.mylabserver.com ansible_user=cloud_user
+[vbox_hosts]
+192.168.101.32 node_ip=192.168.101.32 vbox_vm_name=kubeadm-master vagrant_name=master
+192.168.101.34 node_ip=192.168.101.34 vbox_vm_name=kubeadm-worker-01 vagrant_name=worker-01
+192.168.101.35 node_ip=192.168.101.35 vbox_vm_name=kubeadm-worker-02 vagrant_name=worker-02
 
-[master]
-737f3fac481c.mylabserver.com ansible_user=cloud_user
+[vbox_master]
+192.168.101.32
 
-[workers]
-737f3fac482c.mylabserver.com ansible_user=cloud_user
-737f3fac483c.mylabserver.com ansible_user=cloud_user
+[vbox_workers]
+192.168.101.34
+192.168.101.35
+
+[vbox_local:children]
+vbox_hosts
+vbox_master
+vbox_workers
+
+[vbox_local:vars]
+lab_time_from_controller=true
+lab_environment=vbox
+local_kube_context=vbox-kubeadm
+ansible_ssh_private_key_file=artifacts/vagrant/id_ed25519
+ansible_user=vboxuser
+target_user=vboxuser
+
+[all:vars]
+timezone=Asia/Singapore
+
+
+[cluster_nodes:children]
+vbox_hosts
+
+[control_plane:children]
+vbox_master
+
+[worker_nodes:children]
+vbox_workers

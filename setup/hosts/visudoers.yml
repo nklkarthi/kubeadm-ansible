@@ -1,0 +1,37 @@
+---
+- name: Configure lab sudo access and timezone
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars:
+    sudo_user: '{{ target_user | default(ansible_user | default(''vboxuser'')) }}'
+  tasks:
+    - name: Create a dedicated validated sudoers drop-in
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-kubeadm-lab
+        content: |
+          {{ sudo_user }} ALL=(ALL) NOPASSWD: ALL
+        owner: root
+        group: root
+        mode: '0440'
+        validate: visudo -cf %s
+    - name: Read the existing timezone
+      ansible.builtin.command:
+        argv:
+          - timedatectl
+          - show
+          - -p
+          - Timezone
+          - --value
+      changed_when: false
+      register: existing_timezone
+      check_mode: false
+    - name: Set the inventory timezone
+      ansible.builtin.command:
+        argv:
+          - timedatectl
+          - set-timezone
+          - '{{ timezone | default("Asia/Singapore") }}'
+      changed_when: true
+      when: existing_timezone.stdout != (timezone | default('Asia/Singapore'))
+  vars_files:
+    - ../vars/common.yml

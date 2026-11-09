@@ -1,0 +1,112 @@
+---
+- name: Create the API audit policy and log directories
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    mode: '0700'
+  loop:
+    - /etc/kubernetes/audit
+    - /var/log/kubernetes/audit
+- name: Install a lab audit policy that excludes credential contents
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/audit/policy.yaml
+    mode: '0600'
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      omitStages: [RequestReceived]
+      rules:
+        - level: None
+          nonResourceURLs: [/healthz*, /readyz*, /livez*, /metrics]
+        - level: Metadata
+- name: Read the kubeadm-managed API server manifest
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: audit_api_source
+- name: Define the bounded audit settings
+  ansible.builtin.set_fact:
+    audit_api_pod: '{{ audit_api_source.content | b64decode | from_yaml }}'
+    audit_flags:
+      - --audit-policy-file=/etc/kubernetes/audit/policy.yaml
+      - --audit-log-path=/var/log/kubernetes/audit/audit.log
+      - --audit-log-maxage=1
+      - --audit-log-maxbackup=2
+      - --audit-log-maxsize=10
+    audit_mounts:
+      - name: audit-policy
+        mountPath: /etc/kubernetes/audit
+        readOnly: true
+      - name: audit-logs
+        mountPath: /var/log/kubernetes/audit
+        readOnly: false
+    audit_volumes:
+      - name: audit-policy
+        hostPath:
+          path: /etc/kubernetes/audit
+          type: Directory
+      - name: audit-logs
+        hostPath:
+          path: /var/log/kubernetes/audit
+          type: Directory
+- name: Preserve unrelated API server arguments and mounts
+  ansible.builtin.set_fact:
+    audit_api_container: '{{ audit_api_pod.spec.containers[0] | combine({''command'': (audit_api_pod.spec.containers[0].command
+      | reject(''match'', ''^--audit-'') | list) + audit_flags, ''volumeMounts'': (audit_api_pod.spec.containers[0].volumeMounts
+      | rejectattr(''name'', ''in'', [''audit-policy'', ''audit-logs'']) | list) + audit_mounts}) }}'
+- name: Enable audit logging in the static pod without backup files in the watched directory
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: '{{ audit_api_pod | combine({''spec'': {''containers'': [audit_api_container], ''volumes'': (audit_api_pod.spec.volumes
+      | rejectattr(''name'', ''in'', [''audit-policy'', ''audit-logs'']) | list) + audit_volumes}}, recursive=true)
+      | to_nice_yaml }}'
+- name: Wait for the audit-enabled API server manifest to become active
+  ansible.builtin.command: kubectl --request-timeout=10s get pods -n kube-system -l component=kube-apiserver
+    -o json
+  register: audit_mirror_pod
+  until: audit_mirror_pod.rc == 0 and audit_flags[0] in ((audit_mirror_pod.stdout | from_json)['items'] | map(attribute='spec.containers')
+    | flatten | map(attribute='command') | flatten | list)
+  retries: 36
+  delay: 5
+  changed_when: false
+- name: Wait for the audit-configured API server
+  ansible.builtin.command: kubectl --request-timeout=10s get --raw /readyz
+  register: audit_api_ready
+  until: audit_api_ready.rc == 0 and audit_api_ready.stdout == 'ok'
+  retries: 36
+  delay: 5
+  changed_when: false
+- name: Read kubeadm's upgrade configuration
+  ansible.builtin.command: kubectl get configmap kubeadm-config -n kube-system -o json
+  register: audit_kubeadm_config
+  changed_when: false
+- name: Read existing kubeadm API settings
+  ansible.builtin.set_fact:
+    audit_stored_cluster: '{{ (audit_kubeadm_config.stdout | from_json).data.ClusterConfiguration | from_yaml
+      }}'
+- name: Preserve audit configuration for subsequent kubeadm operations
+  ansible.builtin.set_fact:
+    audit_cluster_config: '{{ audit_stored_cluster | combine({''apiServer'': {''extraArgs'': (audit_stored_cluster.apiServer.extraArgs
+      | default([]) | rejectattr(''name'', ''match'', ''^audit-'') | list) + [{''name'': ''audit-policy-file'',
+      ''value'': ''/etc/kubernetes/audit/policy.yaml''}, {''name'': ''audit-log-path'', ''value'': ''/var/log/kubernetes/audit/audit.log''},
+      {''name'': ''audit-log-maxage'', ''value'': ''1''}, {''name'': ''audit-log-maxbackup'', ''value'': ''2''},
+      {''name'': ''audit-log-maxsize'', ''value'': ''10''}], ''extraVolumes'': (audit_stored_cluster.apiServer.extraVolumes
+      | default([]) | rejectattr(''name'', ''in'', [''audit-policy'', ''audit-logs'']) | list) + [{''name'':
+      ''audit-policy'', ''hostPath'': ''/etc/kubernetes/audit'', ''mountPath'': ''/etc/kubernetes/audit'',
+      ''readOnly'': true, ''pathType'': ''Directory''}, {''name'': ''audit-logs'', ''hostPath'': ''/var/log/kubernetes/audit'',
+      ''mountPath'': ''/var/log/kubernetes/audit'', ''readOnly'': false, ''pathType'': ''Directory''}]}}, recursive=true)
+      }}'
+- name: Reconcile the stored kubeadm configuration
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - configmap
+      - kubeadm-config
+      - -n
+      - kube-system
+      - --type=merge
+      - -p
+      - '{{ {"data": {"ClusterConfiguration": audit_cluster_config | to_nice_yaml}} | to_json }}'
+  register: audit_kubeadm_patch
+  changed_when: '''(no change)'' not in audit_kubeadm_patch.stdout'

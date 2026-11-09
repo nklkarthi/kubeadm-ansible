@@ -1,0 +1,57 @@
+---
+- name: Validate the explicitly selected certification profile
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/common.yml
+  tasks:
+    - name: Require a supported certification and explicit rebuild choice
+      ansible.builtin.assert:
+        that:
+          - certification is defined
+          - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
+            'otca', 'kca', 'cnpa', 'cnpe', 'lfcs']
+- name: Prepare the pinned certification controller tools
+  import_playbook: hosts/controller_tools.yml
+- name: Reset only when a certification rebuild is explicitly requested
+  import_playbook: maintenance/kube_reset.yml
+  vars:
+    reset_allow_minor_switch: true
+  when: rebuild_lab | default(false) | bool
+- name: Remove host add-ons not selected for the fresh certification cluster
+  import_playbook: maintenance/certification_hosts.yml
+  when: rebuild_lab | default(false) | bool
+- name: Build the functional base for the selected certification
+  import_playbook: kube_cluster.yml
+- name: Prepare AppArmor only for the selected security exercises
+  import_playbook: security/apparmor.yml
+  when: '''apparmor'' in certification_addons | default([])'
+- name: Prepare gVisor only for the selected sandbox exercises
+  import_playbook: security/gvisor.yml
+  when: '''gvisor'' in certification_addons | default([])'
+- name: Prepare Falco only for the selected runtime-security exercises
+  import_playbook: security/falco_install.yml
+  when: '''falco'' in certification_addons | default([])'
+- name: Prepare selected metrics and CIS tools
+  import_playbook: addons/certification_addons.yml
+  vars:
+    install_metrics_server: '{{ ''metrics'' in certification_addons | default([]) }}'
+    install_kube_bench: '{{ ''kube_bench'' in certification_addons | default([]) }}'
+  when: certification_addons | default([]) | intersect(['metrics', 'kube_bench']) | length > 0
+- name: Prepare Argo CD only for the selected GitOps exercises
+  import_playbook: addons/argocd_install.yml
+  when: '''argocd'' in certification_addons | default([])'
+- name: Prepare Istio only for the selected mesh exercises
+  import_playbook: addons/istio_install.yml
+  when: '''istio'' in certification_addons | default([])'
+- name: Prepare Bookinfo only when the selected exercise uses it
+  import_playbook: addons/bookinfo_deploy.yml
+  when: '''bookinfo'' in certification_addons | default([])'
+- name: Prepare monitoring only for the selected observability exercises
+  import_playbook: addons/prometheus_stack_simple.yml
+  when: '''monitoring'' in certification_addons | default([])'
+- name: Install only the selected syllabus-specific components
+  import_playbook: addons/certification_stack.yml
+- name: Test the selected certification environment
+  import_playbook: ../tests/certification.yml

@@ -1,0 +1,43 @@
+---
+- name: Install Kyverno with one replica of each required lab controller
+  ansible.builtin.include_tasks: ../helm_release.yml
+  vars:
+    helm_release_name: kyverno
+    helm_namespace: kyverno
+    helm_chart_name: kyverno
+    helm_chart_version: '{{ tool_versions.kyverno_chart }}'
+    helm_chart_source: '{{ helm_chart_sources.kyverno }}'
+    helm_values:
+      admissionController:
+        replicas: 1
+        container:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      backgroundController:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+      cleanupController:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+      reportsController:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            memory: 256Mi

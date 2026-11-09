@@ -1,0 +1,74 @@
+---
+- name: Remove managed host add-ons that the next certification does not use
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Detect the lab-managed Falco configuration
+      ansible.builtin.stat:
+        path: /etc/falco/config.d/zz-kubeadm-lab.yaml
+      register: managed_falco
+    - name: Remove the unused lab-managed runtime detector
+      when: managed_falco.stat.exists and 'falco' not in certification_addons | default([])
+      block:
+        - name: Read installed driver services
+          ansible.builtin.service_facts:
+        - name: Stop installed Falco driver services before removing the package
+          ansible.builtin.systemd_service:
+            name: '{{ item }}'
+            state: stopped
+            enabled: false
+          loop: [falco-modern-bpf.service, falco-kmod.service, falco-bpf.service]
+          when: item in ansible_facts.services
+        - name: Purge the lab-managed Falco package
+          ansible.builtin.apt:
+            name: falco
+            state: absent
+            purge: true
+        - name: Remove the owned Falco configuration
+          ansible.builtin.file:
+            path: /etc/falco/config.d/zz-kubeadm-lab.yaml
+            state: absent
+    - name: Detect the lab's gVisor runtime drop-in
+      ansible.builtin.stat:
+        path: /etc/containerd/conf.d/gvisor.toml
+      register: managed_gvisor
+    - name: Remove the unused managed sandbox runtime after cluster reset
+      when: managed_gvisor.stat.exists and 'gvisor' not in certification_addons | default([])
+      block:
+        - name: Read the owned sandbox configuration
+          ansible.builtin.slurp:
+            src: /etc/containerd/conf.d/gvisor.toml
+          register: managed_gvisor_content
+        - name: Require the expected sandbox handler before removing it
+          ansible.builtin.assert:
+            that: "'io.containerd.runsc.v1' in (managed_gvisor_content.content | b64decode)"
+        - name: Remove the unused sandbox handler configuration
+          ansible.builtin.file:
+            path: /etc/containerd/conf.d/gvisor.toml
+            state: absent
+          notify: Reload containerd without the unused sandbox
+        - name: Inspect sandbox binary links before cleanup
+          ansible.builtin.stat:
+            path: /usr/local/bin/{{ item }}
+          loop: [gvisor-bin, runsc, containerd-shim-runsc-v1]
+          register: managed_gvisor_links
+        - name: Remove only links into this lab's gVisor installation
+          ansible.builtin.file:
+            path: '{{ item.stat.path }}'
+            state: absent
+          loop: '{{ managed_gvisor_links.results }}'
+          loop_control:
+            label: '{{ item.item }}'
+          when: item.stat.islnk | default(false) and item.stat.lnk_source is match('^/opt/gvisor/')
+        - name: Remove the unused versioned sandbox bundles
+          ansible.builtin.file:
+            path: /opt/gvisor
+            state: absent
+  handlers:
+    - name: Reload containerd without the unused sandbox
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted

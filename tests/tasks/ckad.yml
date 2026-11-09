@@ -1,0 +1,112 @@
+---
+- name: Verify declarative application delivery and self-healing
+  ansible.builtin.include_tasks: kcna.yml
+- name: Verify persistent storage and application routing
+  ansible.builtin.include_tasks: storage_routes.yml
+- name: Create a secret and a multi-container workload
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: app-secret
+            namespace: '{{ test_namespace }}'
+          stringData:
+            message: secret-from-kubernetes
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: multi-container
+            namespace: '{{ test_namespace }}'
+          spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            initContainers:
+              - name: prepare
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sh
+                  - -c
+                  - echo init-completed > /shared/ready
+                volumeMounts:
+                  - name: shared
+                    mountPath: /shared
+            containers:
+              - name: application
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sh
+                  - -c
+                  - test "$(cat /shared/ready)" = init-completed && test "$MESSAGE" = secret-from-kubernetes
+                    && echo configuration-verified
+                env:
+                  - name: MESSAGE
+                    valueFrom:
+                      secretKeyRef:
+                        name: app-secret
+                        key: message
+                volumeMounts:
+                  - name: shared
+                    mountPath: /shared
+              - name: companion
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sh
+                  - -c
+                  - test -f /shared/ready && echo shared-volume-verified
+                volumeMounts:
+                  - name: shared
+                    mountPath: /shared
+            volumes:
+              - name: shared
+                emptyDir: {}
+- name: Wait for successful completion of the multi-container pod
+  ansible.builtin.command: kubectl get pod multi-container -n {{ test_namespace }} -o jsonpath={.status.phase}
+  register: ckad_multi_container
+  changed_when: false
+  until: ckad_multi_container.stdout == 'Succeeded'
+  retries: 24
+  delay: 5
+- name: Record verified application configuration capabilities
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + [''init containers prepare a shared
+      ephemeral volume'', ''Secret values are consumed by the application'', ''multiple containers share data
+      and complete successfully''] }}'
+- name: Read the current application revision before an update
+  ansible.builtin.command:
+    argv: [kubectl, get, deployment/web, -n, '{{ test_namespace }}', '-o', 'jsonpath={.metadata.annotations.deployment\.kubernetes\.io/revision}']
+  register: ckad_initial_revision
+  changed_when: false
+- name: Roll out an application configuration change
+  ansible.builtin.command: kubectl set env deployment/web -n {{ test_namespace }} MESSAGE=updated-application
+  changed_when: true
+- name: Wait for every replica to use the new configuration
+  ansible.builtin.command: kubectl rollout status deployment/web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Verify the updated application through its service
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://web
+  register: ckad_updated_response
+  changed_when: false
+- name: Require the new application response
+  ansible.builtin.assert:
+    that: ckad_updated_response.stdout | trim == 'updated-application'
+- name: Roll back to the recorded application revision
+  ansible.builtin.command: kubectl rollout undo deployment/web -n {{ test_namespace }} --to-revision={{ ckad_initial_revision.stdout }}
+  changed_when: true
+- name: Wait for the restored application revision
+  ansible.builtin.command: kubectl rollout status deployment/web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Verify the original configuration returns after rollback
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://web
+  register: ckad_rollback_response
+  changed_when: false
+- name: Require the restored application response
+  ansible.builtin.assert:
+    that: ckad_rollback_response.stdout | trim == 'cloud-native-lab'
+- name: Record verified rollout and rollback behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["application configuration update rolls out to all replicas", "rollout undo restores the original working application"] }}'

@@ -1,0 +1,129 @@
+---
+- name: Install Istio with version-matched CLI and samples
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    istio_version: '{{ istio_release | default(tool_versions.istio) }}'
+    addon_namespace: istio-system
+    tool_name: Istio 1.31
+    tool_kubernetes_min: 1.32.0
+    tool_kubernetes_max: 1.38.0
+    istio_profile: '{{ mesh_profile | default(''default'') }}'
+    istio_http_port: '{{ istio_nodeport_http | default(lab_nodeports.istio_http) | int }}'
+    istio_https_port: '{{ istio_nodeport_https | default(lab_nodeports.istio_https) | int }}'
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Require the reviewed Istio release line
+      ansible.builtin.assert:
+        that:
+          - istio_version is match('^1\.31\.')
+          - istio_profile in ['default', 'demo']
+    - name: Run tasks/istio_release.yml
+      ansible.builtin.import_tasks: ../tasks/istio_release.yml
+    - name: Create the Istio install configuration directory
+      ansible.builtin.file:
+        path: /etc/kubernetes/addons
+        state: directory
+        mode: '0755'
+    - name: Persist the selected Istio installation settings
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/addons/istio-{{ istio_version }}.yaml
+        content: '{{ istio_operator | to_nice_yaml }}'
+        mode: '0644'
+      vars:
+        istio_operator:
+          apiVersion: install.istio.io/v1alpha1
+          kind: IstioOperator
+          spec:
+            profile: '{{ istio_profile }}'
+            components:
+              pilot:
+                k8s:
+                  resources:
+                    requests: {cpu: 100m, memory: 128Mi}
+                    limits: {cpu: '1', memory: 512Mi}
+              ingressGateways:
+                - name: istio-ingressgateway
+                  enabled: true
+                  k8s:
+                    resources:
+                      requests: {cpu: 50m, memory: 64Mi}
+                      limits: {cpu: 500m, memory: 256Mi}
+            values:
+              global:
+                proxy:
+                  resources:
+                    requests: {cpu: 25m, memory: 64Mi}
+                    limits: {cpu: 500m, memory: 256Mi}
+      register: istio_settings
+    - name: Read the installed Istio control plane
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - deployment
+          - istiod
+          - -n
+          - istio-system
+          - --ignore-not-found
+          - -o
+          - json
+      register: installed_istiod
+      changed_when: false
+      check_mode: false
+    - name: Reconcile the Istio control plane
+      ansible.builtin.command:
+        argv:
+          - /opt/istio/istio-{{ istio_version }}/bin/istioctl
+          - install
+          - -f
+          - /etc/kubernetes/addons/istio-{{ istio_version }}.yaml
+          - -y
+      changed_when: true
+      when: istio_settings.changed or installed_istiod.stdout | length == 0 or (':' ~ istio_version) not in
+        installed_istiod.stdout
+    - name: Set stable ingress gateway NodePorts
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - patch
+          - service
+          - istio-ingressgateway
+          - -n
+          - istio-system
+          - --type=strategic
+          - -p
+          - '{{ {''spec'': {''type'': ''NodePort'', ''ports'': [{''port'': 15021, ''nodePort'': 31021}, {''port'':
+            80, ''nodePort'': istio_http_port | int}, {''port'': 443, ''nodePort'': istio_https_port | int}]}}
+            | to_json }}'
+      register: istio_ports
+      changed_when: '''(no change)'' not in istio_ports.stdout'
+    - name: Wait for deployment/istiod
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/istiod
+          - -n
+          - istio-system
+          - --timeout=300s
+      changed_when: false
+    - name: Wait for deployment/istio-ingressgateway
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/istio-ingressgateway
+          - -n
+          - istio-system
+          - --timeout=300s
+      changed_when: false
+  vars_files:
+    - ../vars/common.yml

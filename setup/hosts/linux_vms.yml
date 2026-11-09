@@ -1,0 +1,7 @@
+---
+- name: Provision the Linux certification VM only when selected
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_nodes: [lfcs]
+- name: Check the Linux VM's CPU and network stability
+  import_playbook: ../../tests/local_vms.yml

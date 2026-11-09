@@ -1,0 +1,141 @@
+---
+- name: Prepare a client for the instrumentation exercise
+  ansible.builtin.include_tasks: kcna.yml
+  when: certification_verify_core | default(true) | bool
+- name: Deploy an instrumented application with scraping and alerting rules
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: metrics-app
+            namespace: "{{ test_namespace }}"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: metrics-app
+            template:
+              metadata:
+                labels:
+                  app: metrics-app
+              spec:
+                containers:
+                  - name: app
+                    image: ghcr.io/stefanprodan/podinfo:{{ tool_versions.podinfo }}
+                    command: [./podinfo, --port=9898, --port-metrics=9797]
+                    resources:
+                      requests:
+                        cpu: 25m
+                        memory: 32Mi
+                      limits:
+                        cpu: 200m
+                        memory: 128Mi
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: metrics-app
+            namespace: "{{ test_namespace }}"
+            labels:
+              app: metrics-app
+          spec:
+            selector:
+              app: metrics-app
+            ports:
+              - name: http
+                port: 9898
+              - name: metrics
+                port: 9797
+        - apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: metrics-app
+            namespace: "{{ test_namespace }}"
+            labels:
+              release: kube-prometheus-stack
+          spec:
+            selector:
+              matchLabels:
+                app: metrics-app
+            endpoints:
+              - port: metrics
+                interval: 5s
+        - apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: certification
+            namespace: "{{ test_namespace }}"
+            labels:
+              release: kube-prometheus-stack
+          spec:
+            groups:
+              - name: certification
+                rules:
+                  - alert: CertificationSignal
+                    expr: vector(1)
+                    for: 1s
+                    labels:
+                      severity: info
+                      certification_namespace: "{{ test_namespace }}"
+                  - record: certification:cluster_nodes:count
+                    expr: count(kube_node_info)
+- name: Wait for the instrumented application
+  ansible.builtin.command: kubectl rollout status deployment/metrics-app -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Exercise the instrumented HTTP endpoint
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://metrics-app:9898/
+  changed_when: false
+- name: Query collected cluster metrics and the recording rule
+  ansible.builtin.uri:
+    url: "http://{{ lab_access_host }}:{{ lab_nodeports.prometheus }}/api/v1/query?query={{ item | urlencode }}"
+    return_content: true
+  loop:
+    - sum(kube_node_info)
+    - certification:cluster_nodes:count
+  register: prometheus_cluster_queries
+  delegate_to: localhost
+  become: false
+  until: prometheus_cluster_queries.status == 200 and prometheus_cluster_queries.json.data.result | length > 0 and
+    prometheus_cluster_queries.json.data.result[0].value[1] | int == groups[cluster_hosts] | length
+  retries: 24
+  delay: 5
+- name: Verify application metrics were scraped through the ServiceMonitor
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.prometheus }}/api/v1/query?query={{ pca_application_selector | urlencode }}'
+    return_content: true
+  register: prometheus_application_query
+  vars:
+    pca_application_selector: 'up{namespace="{{ test_namespace }}",service="metrics-app"}'
+  delegate_to: localhost
+  become: false
+  until: prometheus_application_query.status == 200 and prometheus_application_query.json.data.result | length == 1 and
+    prometheus_application_query.json.data.result[0].value[1] == '1'
+  retries: 24
+  delay: 5
+- name: Verify Alertmanager receives the test alert
+  ansible.builtin.uri:
+    url: "http://{{ lab_access_host }}:{{ lab_nodeports.alertmanager }}/api/v2/alerts"
+    return_content: true
+  register: certification_alerts
+  delegate_to: localhost
+  become: false
+  until: certification_alerts.status == 200 and certification_alerts.json | selectattr('labels.alertname', 'equalto', 'CertificationSignal') |
+    selectattr('labels.certification_namespace', 'equalto', test_namespace) | list | length > 0
+  retries: 24
+  delay: 5
+- name: Verify the dashboard backend is healthy
+  ansible.builtin.uri:
+    url: "http://{{ lab_access_host }}:{{ lab_nodeports.grafana }}/api/health"
+    return_content: true
+  register: grafana_health
+  delegate_to: localhost
+  become: false
+  failed_when: grafana_health.status != 200 or grafana_health.json.database != 'ok'
+- name: Record verified monitoring capabilities
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["Prometheus scrapes an instrumented application through a ServiceMonitor", "PromQL aggregation
+      and a recording rule return the selected node count", "Alertmanager receives a firing PrometheusRule alert", "Grafana reports a healthy database"] }}'

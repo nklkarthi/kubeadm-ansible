@@ -1,0 +1,25 @@
+---
+- name: Cache only images requested by scheduled pending pods
+  when: controller_image_cache | default(false) | bool
+  block:
+    - name: Read guest identity facts needed for image placement
+      ansible.builtin.setup:
+        gather_subset:
+          - min
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups[cluster_hosts] }}"
+      when: hostvars[item].ansible_facts.hostname is not defined
+    - name: Read pods awaiting startup
+      ansible.builtin.command: kubectl get pods --all-namespaces -o json
+      register: pending_image_pods
+      changed_when: false
+    - name: Map requested images to their scheduled guests
+      ansible.builtin.set_fact:
+        requested_guest_images: '{{ lookup("ansible.builtin.template", repository_root ~ "/setup/templates/pod-images.json.j2") | from_json }}'
+    - name: Cache and import missing requested images
+      ansible.builtin.include_tasks: cache_image.yml
+      loop: "{{ requested_guest_images }}"
+      loop_control:
+        loop_var: image_request
+        label: "{{ image_request.host }} {{ image_request.image }}"

@@ -1,0 +1,70 @@
+---
+- name: Require a healthy Backstage backend from the controller
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}/.backstage/health/v1/readiness'
+  delegate_to: localhost
+  become: false
+  register: backstage_health
+  until: backstage_health.status == 200
+  retries: 12
+  delay: 5
+- name: Sign in through the local lab guest provider
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}/api/auth/guest/refresh'
+    headers:
+      X-Requested-With: XMLHttpRequest
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: backstage_guest
+  no_log: true
+- name: Read the configured catalog component and ownership
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}/api/catalog/entities/by-name/component/default/practice-service'
+    headers:
+      Authorization: 'Bearer {{ backstage_guest.json.backstageIdentity.token }}'
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: backstage_component
+  until: backstage_component.status == 200
+  retries: 24
+  delay: 5
+  no_log: true
+- name: Require the declared catalog identity and owner relation
+  ansible.builtin.assert:
+    that:
+      - backstage_component.json.spec.lifecycle == 'experimental'
+      - backstage_component.json.relations | selectattr('type', 'equalto', 'ownedBy') | selectattr('targetRef', 'equalto', 'group:default/platform') | list | length == 1
+- name: Start the configured software template without external credentials
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}/api/scaffolder/v2/tasks'
+    method: POST
+    headers:
+      Authorization: 'Bearer {{ backstage_guest.json.backstageIdentity.token }}'
+    body_format: json
+    body:
+      templateRef: template:default/practice-service
+      values:
+        name: '{{ test_namespace }}'
+    status_code: 201
+  delegate_to: localhost
+  become: false
+  register: backstage_task
+  no_log: true
+- name: Require successful execution of the software template
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.backstage }}/api/scaffolder/v2/tasks/{{ backstage_task.json.id }}'
+    headers:
+      Authorization: 'Bearer {{ backstage_guest.json.backstageIdentity.token }}'
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: backstage_task_status
+  until: backstage_task_status.json.status == 'completed'
+  retries: 24
+  delay: 5
+  no_log: true
+- name: Record verified developer portal capabilities
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Backstage backend is reachable from the controller", "local guest authentication issues a usable identity", "catalog ingestion resolves component ownership", "the registered software template executes successfully"] }}'

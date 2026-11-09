@@ -1,0 +1,107 @@
+---
+- name: Install the matching Istio demonstration dashboards
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    istio_version: '{{ istio_release | default(tool_versions.istio) }}'
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Check the installed Istio release
+      ansible.builtin.import_tasks: ../tasks/istio_access.yml
+    - name: Reconcile the version-matched prometheus sample
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/addons/prometheus.yaml
+        manifest_name: istio-{{ istio_version }}-prometheus
+        addon_namespace: istio-system
+        manifest_patches:
+          - kind: Service
+            name: prometheus
+            value:
+              spec:
+                type: NodePort
+                ports:
+                  - name: prometheus
+                    port: 9090
+                    targetPort: 9090
+                    nodePort: '{{ lab_nodeports.istio_prometheus | int }}'
+    - name: Reconcile the version-matched grafana sample
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/addons/grafana.yaml
+        manifest_name: istio-{{ istio_version }}-grafana
+        addon_namespace: istio-system
+        manifest_patches:
+          - kind: Service
+            name: grafana
+            value:
+              spec:
+                type: NodePort
+                ports:
+                  - name: grafana
+                    port: 3000
+                    targetPort: 3000
+                    nodePort: '{{ lab_nodeports.istio_grafana | int }}'
+    - name: Reconcile the version-matched jaeger sample
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/addons/jaeger.yaml
+        manifest_name: istio-{{ istio_version }}-jaeger
+        addon_namespace: istio-system
+        manifest_patches:
+          - kind: Service
+            name: tracing
+            value:
+              spec:
+                type: NodePort
+                ports:
+                  - name: http-query
+                    port: 80
+                    targetPort: 16686
+                    nodePort: '{{ lab_nodeports.istio_jaeger | int }}'
+                  - name: grpc-query
+                    port: 16685
+                    targetPort: 16685
+    - name: Reconcile the version-matched kiali sample
+      ansible.builtin.include_tasks: ../tasks/download_apply.yml
+      vars:
+        manifest_url: https://raw.githubusercontent.com/istio/istio/{{ istio_version }}/samples/addons/kiali.yaml
+        manifest_name: istio-{{ istio_version }}-kiali
+        addon_namespace: istio-system
+        manifest_patches:
+          - kind: Service
+            name: kiali
+            value:
+              spec:
+                type: NodePort
+                ports:
+                  - name: http
+                    port: 20001
+                    targetPort: 20001
+                    nodePort: '{{ lab_nodeports.istio_kiali | int }}'
+                  - name: http-metrics
+                    port: 9090
+                    targetPort: 9090
+    - name: Wait for the demonstration dashboards
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/{{ item }}
+          - -n
+          - istio-system
+          - --timeout=300s
+      changed_when: false
+      loop:
+        - prometheus
+        - grafana
+        - jaeger
+        - kiali
+  vars_files:
+    - ../vars/common.yml

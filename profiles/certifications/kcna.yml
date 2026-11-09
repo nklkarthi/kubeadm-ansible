@@ -1,0 +1,11 @@
+---
+certification: kcna
+k8s_version: v1.37
+cni_plugin: calico
+certification_addons: []
+download_via_controller: true
+controller_image_cache: true
+manual_study_topics:
+  - Cloud native architecture and ecosystem principles
+  - CNCF governance and community collaboration
+lab_time_from_controller: true

@@ -1,0 +1,25 @@
+---
+- name: Drain workers
+  hosts: '{{ worker_hosts }}'
+  serial: 1
+  gather_facts: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Run the shared node operation
+      ansible.builtin.import_tasks: ../tasks/drain_node.yml
+  vars_files:
+    - ../vars/common.yml
+- name: Drain control plane
+  hosts: '{{ control_plane_hosts }}'
+  serial: 1
+  gather_facts: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Run the shared node operation
+      ansible.builtin.import_tasks: ../tasks/drain_node.yml
+  vars_files:
+    - ../vars/common.yml

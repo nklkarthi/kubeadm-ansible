@@ -1,0 +1,158 @@
+---
+- name: Install pinned controller tools for certification labs
+  hosts: localhost
+  connection: local
+  become: false
+  gather_subset:
+    - min
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    controller_os: "{{ ansible_facts.system | lower }}"
+    controller_arch: '{{ {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[ansible_facts.architecture] }}'
+  tasks:
+    - name: Require a supported macOS or Linux controller
+      ansible.builtin.assert:
+        that:
+          - controller_os in ['linux', 'darwin']
+          - ansible_facts.architecture in ['x86_64', 'aarch64', 'arm64']
+    - name: Create private tool and download directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ repository_root }}/.tools/bin"
+        - "{{ repository_root }}/artifacts/downloads"
+        - "{{ repository_root }}/.tools/helm-{{ tool_versions.helm }}"
+        - "{{ repository_root }}/.tools/crane-{{ tool_versions.crane }}"
+    - name: Check the versioned Helm installation
+      ansible.builtin.stat:
+        path: '{{ repository_root }}/.tools/helm-{{ tool_versions.helm }}/{{ controller_os }}-{{ controller_arch }}/helm'
+      register: controller_helm_binary
+    - name: Download and verify Helm
+      ansible.builtin.get_url:
+        url: https://get.helm.sh/helm-{{ tool_versions.helm }}-{{ controller_os }}-{{ controller_arch }}.tar.gz
+        checksum: sha256:https://get.helm.sh/helm-{{ tool_versions.helm }}-{{ controller_os }}-{{ controller_arch }}.tar.gz.sha256sum
+        dest: "{{ repository_root }}/artifacts/downloads/helm-{{ tool_versions.helm }}-{{ controller_os }}-{{ controller_arch }}.tar.gz"
+        mode: "0600"
+        timeout: 60
+      when: not controller_helm_binary.stat.exists
+      register: controller_helm_download
+      until: controller_helm_download is succeeded
+      retries: 3
+      delay: 5
+    - name: Extract the pinned Helm binary
+      ansible.builtin.unarchive:
+        src: "{{ repository_root }}/artifacts/downloads/helm-{{ tool_versions.helm }}-{{ controller_os }}-{{ controller_arch }}.tar.gz"
+        dest: "{{ repository_root }}/.tools/helm-{{ tool_versions.helm }}"
+        creates: "{{ repository_root }}/.tools/helm-{{ tool_versions.helm }}/{{ controller_os }}-{{ controller_arch }}/helm"
+      when: not controller_helm_binary.stat.exists
+    - name: Activate the pinned Helm binary
+      ansible.builtin.file:
+        src: "{{ repository_root }}/.tools/helm-{{ tool_versions.helm }}/{{ controller_os }}-{{ controller_arch }}/helm"
+        dest: "{{ repository_root }}/.tools/bin/helm"
+        state: link
+    - name: Verify the selected Helm version before use
+      ansible.builtin.command: '{{ repository_root }}/.tools/bin/helm version --short'
+      register: controller_helm_version
+      changed_when: false
+      failed_when: tool_versions.helm not in controller_helm_version.stdout
+    - name: Check the versioned registry client installation
+      ansible.builtin.stat:
+        path: '{{ repository_root }}/.tools/crane-{{ tool_versions.crane }}/crane'
+      register: controller_crane_binary
+    - name: Download and verify the registry client
+      ansible.builtin.get_url:
+        url: https://github.com/google/go-containerregistry/releases/download/{{ tool_versions.crane }}/go-containerregistry_{{ ansible_facts.system }}_{{
+          "x86_64" if controller_arch == "amd64" else "arm64" }}.tar.gz
+        checksum: sha256:https://github.com/google/go-containerregistry/releases/download/{{ tool_versions.crane }}/checksums.txt
+        dest: '{{ repository_root }}/artifacts/downloads/go-containerregistry_{{ ansible_facts.system }}_{{ "x86_64" if controller_arch == "amd64" else "arm64" }}.tar.gz'
+        mode: "0600"
+        timeout: 60
+      when: not controller_crane_binary.stat.exists
+      register: controller_crane_download
+      until: controller_crane_download is succeeded
+      retries: 3
+      delay: 5
+    - name: Extract the pinned registry client
+      ansible.builtin.unarchive:
+        src: '{{ repository_root }}/artifacts/downloads/go-containerregistry_{{ ansible_facts.system }}_{{ "x86_64" if controller_arch == "amd64" else "arm64" }}.tar.gz'
+        dest: "{{ repository_root }}/.tools/crane-{{ tool_versions.crane }}"
+        include:
+          - crane
+        creates: "{{ repository_root }}/.tools/crane-{{ tool_versions.crane }}/crane"
+      when: not controller_crane_binary.stat.exists
+    - name: Activate the pinned registry client
+      ansible.builtin.file:
+        src: "{{ repository_root }}/.tools/crane-{{ tool_versions.crane }}/crane"
+        dest: "{{ repository_root }}/.tools/bin/crane"
+        state: link
+        force: true
+    - name: Verify the selected registry client version before use
+      ansible.builtin.command: '{{ repository_root }}/.tools/bin/crane version'
+      register: controller_crane_version
+      changed_when: false
+      failed_when: tool_versions.crane | regex_replace('^v', '') not in controller_crane_version.stdout
+    - name: Remove the superseded unversioned Helm extraction directory
+      ansible.builtin.file:
+        path: "{{ repository_root }}/.tools/{{ controller_os }}-{{ controller_arch }}"
+        state: absent
+    - name: Record that the selected controller tools are available
+      ansible.builtin.set_fact:
+        controller_tools_ready: true
+    - name: Prepare the policy CLI only for selected Kyverno exercises
+      when: "'kyverno' in certification_addons | default([])"
+      block:
+        - name: Create the versioned Kyverno CLI directory
+          ansible.builtin.file:
+            path: "{{ repository_root }}/.tools/kyverno-{{ tool_versions.kyverno }}"
+            state: directory
+            mode: "0700"
+        - name: Check the versioned policy CLI installation
+          ansible.builtin.stat:
+            path: '{{ repository_root }}/.tools/kyverno-{{ tool_versions.kyverno }}/kyverno'
+          register: controller_kyverno_binary
+        - name: Download and verify the selected Kyverno CLI
+          ansible.builtin.get_url:
+            url: https://github.com/kyverno/kyverno/releases/download/{{ tool_versions.kyverno }}/kyverno-cli_{{ tool_versions.kyverno }}_{{ controller_os }}_{{
+              "x86_64" if controller_arch == "amd64" else "arm64" }}.tar.gz
+            checksum: sha256:https://github.com/kyverno/kyverno/releases/download/{{ tool_versions.kyverno }}/checksums.txt
+            dest: "{{ repository_root }}/artifacts/downloads/kyverno-cli-{{ tool_versions.kyverno }}-{{ controller_os }}-{{ controller_arch }}.tar.gz"
+            mode: "0600"
+            timeout: 60
+          when: not controller_kyverno_binary.stat.exists
+          register: controller_kyverno_download
+          until: controller_kyverno_download is succeeded
+          retries: 3
+          delay: 5
+        - name: Extract the pinned policy CLI
+          ansible.builtin.unarchive:
+            src: "{{ repository_root }}/artifacts/downloads/kyverno-cli-{{ tool_versions.kyverno }}-{{ controller_os }}-{{ controller_arch }}.tar.gz"
+            dest: "{{ repository_root }}/.tools/kyverno-{{ tool_versions.kyverno }}"
+            creates: "{{ repository_root }}/.tools/kyverno-{{ tool_versions.kyverno }}/kyverno"
+          when: not controller_kyverno_binary.stat.exists
+        - name: Activate the pinned policy CLI
+          ansible.builtin.file:
+            src: "{{ repository_root }}/.tools/kyverno-{{ tool_versions.kyverno }}/kyverno"
+            dest: "{{ repository_root }}/.tools/bin/kyverno"
+            state: link
+        - name: Verify the selected policy CLI version before use
+          ansible.builtin.command: '{{ repository_root }}/.tools/bin/kyverno version'
+          register: controller_kyverno_version
+          changed_when: false
+          failed_when: tool_versions.kyverno | regex_replace('^v', '') not in controller_kyverno_version.stdout
+    - name: Prepare network CLIs only for selected Cilium exercises
+      ansible.builtin.include_tasks: ../tasks/controller_cli.yml
+      loop:
+        - name: cilium
+          version: '{{ tool_versions.cilium_cli }}'
+          version_args: [version, --client]
+          url: 'https://github.com/cilium/cilium-cli/releases/download/{{ tool_versions.cilium_cli }}/cilium-{{ controller_os }}-{{ controller_arch }}.tar.gz'
+        - name: hubble
+          version: '{{ tool_versions.hubble_cli }}'
+          url: 'https://github.com/cilium/hubble/releases/download/{{ tool_versions.hubble_cli }}/hubble-{{ controller_os }}-{{ controller_arch }}.tar.gz'
+      loop_control:
+        loop_var: controller_cli
+        label: '{{ controller_cli.name }} {{ controller_cli.version }}'
+      when: cni_plugin | default('calico') == 'cilium'

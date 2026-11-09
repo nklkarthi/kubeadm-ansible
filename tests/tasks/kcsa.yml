@@ -1,0 +1,246 @@
+---
+- name: Apply a narrowly scoped service account and role
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: limited
+            namespace: '{{ test_namespace }}'
+          automountServiceAccountToken: false
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: pod-reader
+            namespace: '{{ test_namespace }}'
+          rules:
+            - apiGroups:
+                - ''
+              resources:
+                - pods
+              verbs:
+                - get
+                - list
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: pod-reader
+            namespace: '{{ test_namespace }}'
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: pod-reader
+          subjects:
+            - kind: ServiceAccount
+              name: limited
+              namespace: '{{ test_namespace }}'
+- name: Verify allowed access
+  ansible.builtin.command: kubectl auth can-i get pods -n {{ test_namespace }} --as=system:serviceaccount:{{
+    test_namespace }}:limited
+  register: kcsa_allowed
+  changed_when: false
+- name: Verify secret access is denied
+  ansible.builtin.command: kubectl auth can-i get secrets -n {{ test_namespace }} --as=system:serviceaccount:{{
+    test_namespace }}:limited
+  register: kcsa_denied
+  failed_when: false
+  changed_when: false
+- name: Require the intended least-privilege boundary
+  ansible.builtin.assert:
+    that:
+      - kcsa_allowed.stdout | trim == 'yes'
+      - kcsa_denied.rc == 1
+      - kcsa_denied.stdout | trim == 'no'
+- name: Enforce the restricted Pod Security Standard in the test namespace
+  ansible.builtin.command: kubectl label namespace {{ test_namespace }} pod-security.kubernetes.io/enforce=restricted
+    --overwrite
+  changed_when: true
+- name: Try an intentionally disallowed privileged pod without creating it
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - --dry-run=server
+      - -f
+      - '-'
+    stdin: '{{ {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "rejected", "namespace": test_namespace},
+      "spec": {"containers": [{"name": "privileged", "image": "docker.io/library/busybox:1.37.0", "securityContext":
+      {"privileged": true}}]}} | to_json }}'
+  register: kcsa_privileged
+  changed_when: false
+  failed_when: false
+  until: kcsa_privileged.rc != 0 and 'violates PodSecurity' in kcsa_privileged.stderr
+  retries: 6
+  delay: 2
+- name: Require admission to reject the privileged workload
+  ansible.builtin.assert:
+    that:
+      - kcsa_privileged.rc != 0
+      - '''violates PodSecurity'' in kcsa_privileged.stderr'
+    fail_msg: 'Expected a Pod Security denial; kubectl returned {{ kcsa_privileged.rc }}: {{ kcsa_privileged.stderr }}'
+- name: Deploy restricted application and client pods
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: backend
+            namespace: '{{ test_namespace }}'
+            labels:
+              app: secure-backend
+          spec:
+            serviceAccountName: limited
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              fsGroup: 65534
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: backend
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sh
+                  - -c
+                  - echo secured > /www/index.html && exec httpd -f -p 8080 -h /www
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 8Mi
+                  limits:
+                    cpu: 100m
+                    memory: 32Mi
+                volumeMounts:
+                  - name: www
+                    mountPath: /www
+            volumes:
+              - name: www
+                emptyDir: {}
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: client
+            namespace: '{{ test_namespace }}'
+            labels:
+              role: trusted
+          spec:
+            serviceAccountName: limited
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: client
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sleep
+                  - '600'
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 8Mi
+                  limits:
+                    cpu: 100m
+                    memory: 32Mi
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: backend
+            namespace: '{{ test_namespace }}'
+          spec:
+            selector:
+              app: secure-backend
+            ports:
+              - port: 80
+                targetPort: 8080
+        - apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: backend-isolation
+            namespace: '{{ test_namespace }}'
+          spec:
+            podSelector:
+              matchLabels:
+                app: secure-backend
+            policyTypes:
+              - Ingress
+            ingress: []
+- name: Wait for restricted pods
+  ansible.builtin.command: kubectl wait pods --all -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+  changed_when: false
+- name: Verify network segmentation actually blocks traffic
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} client -- wget -qO- -T 3 http://backend
+  register: kcsa_network_denied
+  changed_when: false
+  failed_when: false
+  until: kcsa_network_denied.rc != 0
+  retries: 6
+  delay: 2
+- name: Require the isolated backend to be unreachable
+  ansible.builtin.assert:
+    that: kcsa_network_denied.rc != 0
+- name: Permit only the trusted client identity
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - networkpolicy
+      - backend-isolation
+      - -n
+      - '{{ test_namespace }}'
+      - --type=merge
+      - -p
+      - '{{ {"spec": {"ingress": [{"from": [{"podSelector": {"matchLabels": {"role": "trusted"}}}]}]}} | to_json
+        }}'
+  changed_when: true
+- name: Verify permitted traffic succeeds
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} client -- wget -qO- -T 5 http://backend
+  register: kcsa_network_allowed
+  changed_when: false
+  until: kcsa_network_allowed.rc == 0 and kcsa_network_allowed.stdout | trim == 'secured'
+  retries: 6
+  delay: 2
+- name: Verify the API serving certificate is signed by the cluster CA
+  ansible.builtin.command: openssl verify -CAfile /etc/kubernetes/pki/ca.crt /etc/kubernetes/pki/apiserver.crt
+  changed_when: false
+- name: Read the bounded audit log
+  ansible.builtin.command: tail -n 30 /var/log/kubernetes/audit/audit.log
+  register: kcsa_audit
+  changed_when: false
+- name: Require actual API audit records
+  ansible.builtin.assert:
+    that:
+      - '''audit.k8s.io'' in kcsa_audit.stdout'
+      - '''RequestResponse'' not in kcsa_audit.stdout'
+- name: Record completed security checks
+  ansible.builtin.set_fact:
+    certification_completed_checks:
+      - RBAC permits pod reads and denies secret reads
+      - Pod Security Admission rejects privileged containers
+      - restricted non-root pods run with seccomp and reduced capabilities
+      - NetworkPolicy denies traffic and permits the selected client
+      - API serving certificate verifies against the current cluster CA
+      - audit metadata records are written without request or response bodies

@@ -1,0 +1,11 @@
+---
+k8s_version: v1.36
+cni_plugin: cilium
+cilium_cluster_name: mesh
+cilium_cluster_id: 2
+allow_single_node: true
+pod_network_cidr: 10.245.0.0/16
+service_network_cidr: 10.112.0.0/16
+download_via_controller: true
+controller_image_cache: true
+lab_time_from_controller: true

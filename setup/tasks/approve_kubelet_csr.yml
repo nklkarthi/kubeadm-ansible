@@ -1,0 +1,43 @@
+---
+- name: Identify the node requesting a serving certificate
+  ansible.builtin.set_fact:
+    csr_node_name: '{{ serving_csr.spec.username | regex_replace("^system:node:", "") }}'
+    csr_node_names: '{{ groups[cluster_hosts] | map("extract", hostvars, ["ansible_facts", "hostname"]) | list
+      }}'
+- name: Require an authenticated selected node and serving-only usages
+  ansible.builtin.assert:
+    that:
+      - csr_node_name in csr_node_names
+      - '''system:nodes'' in serving_csr.spec.groups'
+      - '''server auth'' in serving_csr.spec.usages'
+      - serving_csr.spec.usages | difference(['digital signature', 'key encipherment', 'server auth']) | length
+        == 0
+- name: Select the expected node address
+  ansible.builtin.set_fact:
+    csr_node_host: '{{ groups[cluster_hosts][csr_node_names.index(csr_node_name)] }}'
+- name: Decode the public serving-certificate request
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      printf '%s' {{ serving_csr.spec.request | quote }} | base64 -d | openssl req -noout -text
+    executable: /bin/bash
+  register: serving_csr_details
+  changed_when: false
+- name: Require the request to match the node identity and inventory address
+  ansible.builtin.assert:
+    that:
+      - serving_csr_details.stdout is search('CN\s*=\s*system:node:' ~ (csr_node_name | regex_escape) ~ '(?:,|\s|$)')
+      - (hostvars[csr_node_host].node_ip | default(hostvars[csr_node_host].ansible_facts.default_ipv4.address))
+        in (serving_csr_details.stdout | regex_findall('IP Address:([0-9.]+)'))
+      - serving_csr_details.stdout | regex_findall('IP Address:([0-9.]+)') | difference([hostvars[csr_node_host].node_ip
+        | default(hostvars[csr_node_host].ansible_facts.default_ipv4.address)]) | length == 0
+      - serving_csr_details.stdout | regex_findall('DNS:([^,\s]+)') | difference([csr_node_name, hostvars[csr_node_host].ansible_facts.fqdn | default(csr_node_name)]) | length == 0
+    fail_msg: The serving CSR does not match the selected node; it was not approved.
+- name: Approve only the verified node serving request
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - certificate
+      - approve
+      - '{{ serving_csr.metadata.name }}'
+  changed_when: true

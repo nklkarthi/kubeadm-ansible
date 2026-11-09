@@ -1,0 +1,18 @@
+---
+- name: Read the guest hostname
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+- name: Process selected nodes
+  when: target_nodes is not defined or inventory_hostname in (target_nodes.split(',') if target_nodes is string
+    else target_nodes) or ansible_facts.hostname in (target_nodes.split(',') if target_nodes is string else
+    target_nodes)
+  block:
+    - name: Drain while respecting pod disruption budgets
+      ansible.builtin.command:
+        argv: '{{ [''kubectl'', ''drain'', ansible_facts.hostname, ''--ignore-daemonsets'', ''--timeout=300s'']
+          + ([''--delete-emptydir-data''] if drain_delete_emptydir_data | default(false) | bool else []) +
+          ([''--force''] if drain_force | default(false) | bool else []) }}'
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+      register: drain_result
+      changed_when: '''drained'' in drain_result.stdout'

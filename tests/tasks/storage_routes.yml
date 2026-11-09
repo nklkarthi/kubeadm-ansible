@@ -1,0 +1,188 @@
+---
+- name: Create a dynamically provisioned application volume and HTTP routes
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: app-data
+            namespace: '{{ test_namespace }}'
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: local-path
+            resources:
+              requests:
+                storage: 16Mi
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: persistent-web
+            namespace: '{{ test_namespace }}'
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: persistent-web
+            template:
+              metadata:
+                labels:
+                  app: persistent-web
+              spec:
+                automountServiceAccountToken: false
+                containers:
+                  - name: web
+                    image: docker.io/library/busybox:1.37.0
+                    command:
+                      - sh
+                      - -c
+                      - test -s /www/index.html || echo persistent-content > /www/index.html; exec httpd -f
+                        -p 8080 -h /www
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 8Mi
+                      limits:
+                        cpu: 100m
+                        memory: 32Mi
+                    volumeMounts:
+                      - name: app-data
+                        mountPath: /www
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 8080
+                volumes:
+                  - name: app-data
+                    persistentVolumeClaim:
+                      claimName: app-data
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: persistent-web
+            namespace: '{{ test_namespace }}'
+          spec:
+            selector:
+              app: persistent-web
+            ports:
+              - port: 80
+                targetPort: 8080
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: app-ingress
+            namespace: '{{ test_namespace }}'
+          spec:
+            ingressClassName: traefik
+            rules:
+              - host: '{{ test_namespace }}.lab.invalid'
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: persistent-web
+                          port:
+                            number: 80
+        - apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: app-route
+            namespace: '{{ test_namespace }}'
+          spec:
+            parentRefs:
+              - name: certification-gateway
+                namespace: traefik
+            hostnames:
+              - gateway-{{ test_namespace }}.lab.invalid
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: persistent-web
+                    port: 80
+- name: Wait for dynamic storage and the application
+  ansible.builtin.command: kubectl rollout status deployment/persistent-web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Read the bound persistent volume
+  ansible.builtin.command: kubectl get pvc app-data -n {{ test_namespace }} -o json
+  register: bound_app_volume
+  changed_when: false
+- name: Require successful dynamic volume binding
+  ansible.builtin.assert:
+    that:
+      - (bound_app_volume.stdout | from_json).status.phase == 'Bound'
+      - (bound_app_volume.stdout | from_json).spec.volumeName | length > 0
+- name: Verify ingress routing from the controller
+  ansible.builtin.uri:
+    url: http://{{ lab_access_host }}:{{ lab_nodeports.traefik_http }}/
+    headers:
+      Host: '{{ test_namespace }}.lab.invalid'
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: ingress_response
+  until: ingress_response.status == 200 and ingress_response.content | trim == 'persistent-content'
+  retries: 15
+  delay: 2
+- name: Verify Gateway API routing from the controller
+  ansible.builtin.uri:
+    url: http://{{ lab_access_host }}:{{ lab_nodeports.traefik_http }}/
+    headers:
+      Host: gateway-{{ test_namespace }}.lab.invalid
+    return_content: true
+  delegate_to: localhost
+  become: false
+  register: gateway_response
+  until: gateway_response.status == 200 and gateway_response.content | trim == 'persistent-content'
+  retries: 15
+  delay: 2
+- name: Write a unique persistent marker
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/persistent-web -- sh -c 'echo {{
+    test_namespace }} > /www/marker'
+  changed_when: true
+- name: Read the application pod identity before recreation
+  ansible.builtin.command: kubectl get pods -n {{ test_namespace }} -l app=persistent-web -o json
+  register: persistent_original_pod
+  changed_when: false
+- name: Recreate only the disposable application pod
+  ansible.builtin.command: kubectl delete pod {{ (persistent_original_pod.stdout | from_json)['items'][0].metadata.name
+    }} -n {{ test_namespace }} --wait=true
+  changed_when: true
+- name: Wait for the application to remount its volume
+  ansible.builtin.command: kubectl rollout status deployment/persistent-web -n {{ test_namespace }} --timeout=180s
+  changed_when: false
+- name: Verify persistent data survived pod recreation
+  ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/persistent-web -- cat /www/marker
+  register: persistent_marker
+  changed_when: false
+- name: Require the original persisted marker
+  ansible.builtin.assert:
+    that: persistent_marker.stdout | trim == test_namespace
+- name: Remove the disposable volume consumer before testing reclamation
+  ansible.builtin.command: kubectl delete deployment persistent-web -n {{ test_namespace }} --wait=true
+  changed_when: true
+- name: Delete the disposable volume claim
+  ansible.builtin.command: kubectl delete pvc app-data -n {{ test_namespace }} --wait=true --timeout=120s
+  changed_when: true
+- name: Wait for the provisioner to reclaim the backing volume
+  ansible.builtin.command: kubectl get pv {{ (bound_app_volume.stdout | from_json).spec.volumeName }} --ignore-not-found
+    -o name
+  register: reclaimed_app_volume
+  until: reclaimed_app_volume.stdout | length == 0
+  retries: 24
+  delay: 5
+  changed_when: false
+- name: Record storage and routing checks
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + [''dynamic volume provisioning
+      and binding'', ''persistent data survives pod recreation'', ''Delete reclaim policy removes the persistent
+      volume'', ''Ingress routing returns the application response'', ''Gateway API HTTPRoute routing returns
+      the application response''] }}'

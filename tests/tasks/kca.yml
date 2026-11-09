@@ -1,0 +1,82 @@
+---
+- name: Declare isolated mutation and CEL validation policies
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: kyverno.io/v1
+          kind: Policy
+          metadata:
+            name: add-training-label
+            namespace: "{{ test_namespace }}"
+          spec:
+            background: false
+            rules:
+              - name: add-label
+                match:
+                  any:
+                    - resources:
+                        kinds: [ConfigMap]
+                mutate:
+                  patchStrategicMerge:
+                    metadata:
+                      labels:
+                        training: enabled
+        - apiVersion: policies.kyverno.io/v1
+          kind: NamespacedValidatingPolicy
+          metadata:
+            name: protect-training-config
+            namespace: "{{ test_namespace }}"
+          spec:
+            validationActions: [Deny]
+            matchConstraints:
+              resourceRules:
+                - apiGroups: [""]
+                  apiVersions: [v1]
+                  operations: [CREATE, UPDATE]
+                  resources: [configmaps]
+            validations:
+              - expression: object.metadata.name != 'blocked-config'
+                message: The training policy denies blocked-config.
+- name: Wait for policy admission readiness
+  ansible.builtin.command: kubectl wait namespacedvalidatingpolicy/protect-training-config -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+  changed_when: false
+- name: Create an allowed configuration through the admission webhooks
+  ansible.builtin.command: kubectl create configmap allowed-config -n {{ test_namespace }} --from-literal=message=training
+  changed_when: true
+- name: Read the admitted configuration
+  ansible.builtin.command: kubectl get configmap allowed-config -n {{ test_namespace }} -o json
+  register: kyverno_allowed_config
+  changed_when: false
+- name: Verify Kyverno performed the declared mutation
+  ansible.builtin.assert:
+    that: (kyverno_allowed_config.stdout | from_json).metadata.labels.training == 'enabled'
+- name: Try a configuration that violates the CEL policy
+  ansible.builtin.command: kubectl create configmap blocked-config -n {{ test_namespace }} --from-literal=message=denied --dry-run=server -o json
+  register: kyverno_denied_config
+  changed_when: false
+  failed_when: false
+- name: Require policy denial rather than an unrelated API failure
+  ansible.builtin.assert:
+    that:
+      - kyverno_denied_config.rc != 0
+      - "'The training policy denies blocked-config' in kyverno_denied_config.stderr"
+- name: Verify the selected policy CLI is installed
+  ansible.builtin.command: "{{ repository_root }}/.tools/bin/kyverno version"
+  delegate_to: localhost
+  become: false
+  register: kyverno_cli_version
+  changed_when: false
+  failed_when: tool_versions.kyverno | regex_replace('^v', '') not in kyverno_cli_version.stdout
+- name: Record verified policy behavior
+  ansible.builtin.set_fact:
+    kyverno_completed_checks:
+      - Kyverno mutates an admitted resource in an isolated namespace
+      - CEL validation rejects a deliberately forbidden resource
+      - an allowed resource is admitted successfully
+      - the matching Kyverno CLI is available on the controller
+- name: Append the verified policy checks
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + kyverno_completed_checks }}'

@@ -1,0 +1,47 @@
+---
+- name: Create the Argo workflows namespace
+  ansible.builtin.include_tasks: ../namespace.yml
+  vars:
+    addon_namespace: argo
+- name: Install the pinned Argo workflows components
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: argo
+    manifest_checksum: '{{ manifest_checksums.workflows }}'
+    manifest_name: workflows-{{ tool_versions.argo_workflows }}
+    manifest_url: https://github.com/argoproj/argo-workflows/releases/download/{{ tool_versions.argo_workflows }}/install.yaml
+    manifest_patches:
+      - kind: Deployment
+        name: workflow-controller
+        container_resources:
+          workflow-controller:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      - kind: Deployment
+        name: argo-server
+        container_resources:
+          argo-server:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+- name: Wait for the Argo workflows controllers
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - deployment/{{ item }}
+      - -n
+      - argo
+      - --timeout=600s
+  loop:
+    - workflow-controller
+    - argo-server
+  changed_when: false

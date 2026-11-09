@@ -1,0 +1,26 @@
+---
+- name: Check control-plane credentials exist
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_kubeconfig
+- name: Require an initialized control plane
+  ansible.builtin.assert:
+    that: admin_kubeconfig.stat.exists
+    fail_msg: Initialize the cluster with kube_cluster.yml before installing add-ons.
+- name: Read the Kubernetes server version
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf version --output=json
+  register: cluster_version_result
+  changed_when: false
+  check_mode: false
+- name: Record the server version for compatibility checks
+  ansible.builtin.set_fact:
+    cluster_kubernetes_version: '{{ (cluster_version_result.stdout | from_json).serverVersion.gitVersion |
+      regex_replace(''^v'', '''') | regex_replace(''[-+].*$'', '''') }}'
+- name: Check the tool's reviewed Kubernetes range
+  ansible.builtin.assert:
+    that:
+      - cluster_kubernetes_version is version(tool_kubernetes_min | default('1.35.0'), '>=')
+      - cluster_kubernetes_version is version(tool_kubernetes_max | default('1.38.0'), '<')
+    fail_msg: '{{ tool_name | default(''This playbook'') }} has not been verified for Kubernetes {{ cluster_kubernetes_version
+      }}. Reviewed range: {{ tool_kubernetes_min | default(''1.35.0'') }} <= version < {{ tool_kubernetes_max
+      | default(''1.38.0'') }}. See docs/compatibility.md before choosing a different lab version.'

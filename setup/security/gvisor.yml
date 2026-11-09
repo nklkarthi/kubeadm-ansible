@@ -1,0 +1,151 @@
+---
+- name: Install the pinned gVisor runtime and a schedulable RuntimeClass
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars:
+    gvisor_version: '{{ gvisor_release | default(tool_versions.gvisor) }}'
+  tasks:
+    - name: Install the bundle extraction prerequisites
+      ansible.builtin.apt:
+        name:
+          - bzip2
+          - ca-certificates
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Validate the guest architecture
+      ansible.builtin.assert:
+        that: ansible_facts.architecture in ['x86_64', 'aarch64']
+    - name: Choose gVisor download architecture
+      ansible.builtin.set_fact:
+        gvisor_arch: '{{ ''x86_64'' if ansible_facts.architecture == ''x86_64'' else ''aarch64'' }}'
+    - name: Create the runtime and configuration directories
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        mode: '0755'
+      loop:
+        - /usr/local/bin
+        - /etc/containerd/conf.d
+    - name: Create the versioned full-bundle directory
+      ansible.builtin.file:
+        path: /opt/gvisor/{{ gvisor_version }}
+        state: directory
+        mode: '0755'
+    - name: Check the installed full runtime bundle
+      ansible.builtin.stat:
+        path: /opt/gvisor/{{ gvisor_version }}/gvisor-bin
+      register: gvisor_bundle
+    - name: Download the checksummed complete gVisor point-release bundle
+      when: not gvisor_bundle.stat.exists
+      ansible.builtin.include_tasks: ../tasks/download_file.yml
+      vars:
+        download_spec:
+          url: https://github.com/google/gvisor/releases/download/release-{{ gvisor_version }}/gvisor-{{ gvisor_arch
+            }}.tar.bz2
+          checksum: sha512:https://github.com/google/gvisor/releases/download/release-{{ gvisor_version }}/SHA512SUMS
+          dest: /opt/gvisor/{{ gvisor_version }}/gvisor-{{ gvisor_arch }}.tar.bz2
+          mode: '0644'
+    - name: Extract runtime, shim and required sidecar binaries together
+      ansible.builtin.unarchive:
+        src: /opt/gvisor/{{ gvisor_version }}/gvisor-{{ gvisor_arch }}.tar.bz2
+        dest: /opt/gvisor/{{ gvisor_version }}
+        remote_src: true
+        creates: /opt/gvisor/{{ gvisor_version }}/gvisor-bin
+      notify: Restart containerd
+      when: not gvisor_bundle.stat.exists
+    - name: Remove the bundle archive after extraction
+      ansible.builtin.file:
+        path: /opt/gvisor/{{ gvisor_version }}/gvisor-{{ gvisor_arch }}.tar.bz2
+        state: absent
+    - name: Activate the matching runtime, shim and sidecar directory
+      ansible.builtin.file:
+        src: /opt/gvisor/{{ gvisor_version }}/{{ item }}
+        dest: /usr/local/bin/{{ item }}
+        state: link
+        force: true
+      loop:
+        - gvisor-bin
+        - runsc
+        - containerd-shim-runsc-v1
+      notify: Restart containerd
+    - name: Inspect the existing containerd configuration
+      ansible.builtin.command:
+        argv:
+          - containerd
+          - config
+          - dump
+      changed_when: false
+      register: runtime_config
+      no_log: true
+      check_mode: false
+    - name: Require the bootstrap containerd 2.x configuration and imports
+      ansible.builtin.assert:
+        that:
+          - runtime_config.stdout is search('(?m)^version\s*=\s*[34]')
+          - runtime_config.stdout is search('/etc/containerd/conf.d/\*.toml')
+        fail_msg: Run kube_dependencies.yml to configure containerd 2.x and drop-in imports before gVisor.
+    - name: Configure only the gVisor runtime drop-in
+      ansible.builtin.copy:
+        dest: /etc/containerd/conf.d/gvisor.toml
+        mode: '0644'
+        content: |
+          version = {{ runtime_config.stdout | regex_search('(?m)^version\s*=\s*(\d+)', '\1') | first }}
+          [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+            runtime_type = 'io.containerd.runsc.v1'
+            pod_annotations = ['dev.gvisor.*']
+            container_annotations = ['dev.gvisor.*']
+      notify: Restart containerd
+    - name: Load runtime changes before checking the runtime
+      ansible.builtin.meta: flush_handlers
+    - name: Verify the installed gVisor runtime
+      ansible.builtin.command:
+        argv:
+          - runsc
+          - --version
+      changed_when: false
+    - name: Verify the merged runtime configuration
+      ansible.builtin.command:
+        argv:
+          - containerd
+          - config
+          - dump
+      changed_when: false
+      register: gvisor_config_check
+      no_log: true
+    - name: Require the runsc handler in the merged configuration
+      ansible.builtin.assert:
+        that: '''io.containerd.runsc.v1'' in gvisor_config_check.stdout'
+    - name: Label only the nodes where gVisor is installed
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - label
+          - node
+          - '{{ ansible_facts.hostname }}'
+          - sandbox.gvisor.dev/enabled=true
+          - --overwrite
+      changed_when: '''not labeled'' not in gvisor_label.stdout'
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: gvisor_label
+    - name: Reconcile the schedulable gVisor RuntimeClass once
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: inventory_hostname == ansible_play_hosts_all[0] and not ansible_check_mode
+      block:
+        - name: Use the shared Kubernetes resource reconciler
+          ansible.builtin.import_tasks: ../tasks/apply_manifest.yml
+          vars:
+            manifest_definition: '{{ {''apiVersion'': ''node.k8s.io/v1'', ''kind'': ''RuntimeClass'', ''metadata'':
+              {''name'': ''gvisor''}, ''handler'': ''runsc'', ''scheduling'': {''nodeSelector'': {''sandbox.gvisor.dev/enabled'':
+              ''true''}}} }}'
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+  vars_files:
+    - ../vars/common.yml

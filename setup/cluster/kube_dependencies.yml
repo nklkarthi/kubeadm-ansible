@@ -1,0 +1,278 @@
+---
+- name: Prepare Ubuntu nodes for a fresh kubeadm cluster
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars:
+    kube_version: '{{ k8s_version | default(tool_versions.kubernetes_minor) }}'
+    kube_packages:
+      - kubelet
+      - kubeadm
+      - cri-tools
+  pre_tasks:
+    - name: Validate the supported OS, architecture and minor-version format
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version is version('22.04', '>=')
+          - ansible_facts.architecture in ['x86_64', 'aarch64']
+          - kube_version is match('^v1\.[0-9]+$')
+        fail_msg: This bootstrap requires Ubuntu 22.04+ on amd64/arm64 and k8s_version=v1.MINOR.
+    - name: Read installed packages before any Kubernetes changes
+      ansible.builtin.package_facts:
+        manager: apt
+    - name: Prevent bootstrap from performing an in-place minor upgrade
+      ansible.builtin.assert:
+        that: ansible_facts.packages[item][0].version is match('^' ~ (kube_version | regex_replace('^v', '')
+          | regex_escape) ~ '\.')
+        fail_msg: Installed {{ item }} is from a different minor release. Use the kubeadm upgrade procedure
+          instead of bootstrap.
+      loop:
+        - kubelet
+        - kubeadm
+      when: item in ansible_facts.packages
+  tasks:
+    - name: Read the node timezone
+      ansible.builtin.command: timedatectl show -p Timezone --value
+      register: current_timezone
+      changed_when: false
+      check_mode: false
+    - name: Set the inventory timezone
+      ansible.builtin.command: timedatectl set-timezone {{ timezone | default("Asia/Singapore") }}
+      when: current_timezone.stdout != (timezone | default('Asia/Singapore'))
+      changed_when: true
+    - name: Synchronize node clocks before creating or validating certificates
+      ansible.builtin.import_tasks: ../tasks/time_sync.yml
+    - name: Install repository and unprivileged-become prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gpg
+          - python3-debian
+          - acl
+          - openssl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create the APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Persist networking modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        mode: '0644'
+        content: |
+          overlay
+          br_netfilter
+    - name: Load networking modules before applying bridge sysctls
+      ansible.builtin.command: modprobe {{ item }}
+      loop:
+        - overlay
+        - br_netfilter
+      changed_when: false
+    - name: Disable active swap
+      ansible.builtin.command: swapoff -a
+      when: ansible_facts.swaptotal_mb | int > 0
+      changed_when: true
+    - name: Disable persistent fstab swap entries
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: ^(?!#)(.*\s+swap\s+.*)$
+        replace: '# \1'
+    - name: Read declared swap files without exposing unrelated mount credentials
+      ansible.builtin.slurp:
+        src: /etc/fstab
+      register: kube_fstab_source
+      no_log: true
+    - name: Inspect only conventional Ubuntu swap files declared in fstab
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop: [/swap.img, /swapfile]
+      register: kube_swap_files
+      when: (kube_fstab_source.content | b64decode) is search('(?m)^\s*#?\s*' ~ (item | regex_escape) ~ '\s+\S+\s+swap(?:\s|$)')
+    - name: Reclaim disabled swap-file space without touching swap partitions
+      ansible.builtin.file:
+        path: '{{ item.item }}'
+        state: absent
+      loop: '{{ kube_swap_files.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when:
+        - item.stat is defined
+        - item.stat.isreg | default(false)
+        - not item.stat.islnk | default(false)
+    - name: Persist Kubernetes networking sysctls
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: '0644'
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+      register: kube_sysctl
+    - name: Apply Kubernetes networking sysctls
+      ansible.builtin.command: sysctl -p /etc/sysctl.d/99-kubernetes-cri.conf
+      changed_when: false
+    - name: Add the Docker repository signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker-apt-keyring.asc
+        mode: '0644'
+    - name: Configure the containerd package repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types:
+          - deb
+        uris: https://download.docker.com/linux/ubuntu
+        suites:
+          - '{{ ansible_facts.distribution_release }}'
+        components:
+          - stable
+        architectures:
+          - '{{ "amd64" if ansible_facts.architecture == "x86_64" else "arm64" }}'
+        signed_by: /etc/apt/keyrings/docker-apt-keyring.asc
+      register: containerd_apt_repository
+    - name: Add the selected Kubernetes repository signing key
+      ansible.builtin.get_url:
+        url: https://pkgs.k8s.io/core:/stable:/{{ kube_version }}/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: '0644'
+    - name: Configure the selected Kubernetes minor repository
+      ansible.builtin.deb822_repository:
+        name: kubernetes
+        types:
+          - deb
+        uris: https://pkgs.k8s.io/core:/stable:/{{ kube_version }}/deb/
+        suites:
+          - /
+        signed_by: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+      register: kubernetes_apt_repository
+    - name: Refresh newly configured repositories
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: '{{ 0 if containerd_apt_repository.changed or kubernetes_apt_repository.changed else 3600 }}'
+    - name: Install containerd without silently upgrading an existing runtime
+      ansible.builtin.apt:
+        name: containerd.io
+        state: present
+    - name: Read containerd version
+      ansible.builtin.command: containerd --version
+      register: containerd_version
+      changed_when: false
+      check_mode: false
+    - name: Require containerd 2.x for current kubelet CRI features
+      ansible.builtin.assert:
+        that: containerd_version.stdout is search('v?2\.[0-9]+\.')
+        fail_msg: Current Kubernetes requires containerd 2.x here. Migrate older runtimes explicitly.
+    - name: Create the runtime configuration directory
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/containerd/conf.d
+    - name: Generate containerd configuration only on a new node
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+      notify: Restart containerd
+    - name: Configure containerd through native Ansible tasks
+      ansible.builtin.import_tasks: ../tasks/containerd_config.yml
+    - name: Validate the merged runtime configuration before restarting
+      ansible.builtin.command: containerd config dump
+      changed_when: false
+      no_log: true
+    - name: Enable containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        enabled: true
+        state: started
+    - name: Apply runtime configuration before kubeadm runs
+      ansible.builtin.meta: flush_handlers
+    - name: Configure crictl's runtime endpoint
+      ansible.builtin.copy:
+        dest: /etc/crictl.yaml
+        mode: '0644'
+        content: |
+          runtime-endpoint: unix:///run/containerd/containerd.sock
+          image-endpoint: unix:///run/containerd/containerd.sock
+          timeout: 10
+          debug: false
+    - name: Install missing Kubernetes packages from the selected minor only
+      ansible.builtin.apt:
+        name: '{{ item }}={{ kube_version | regex_replace("^v", "") }}.*'
+        state: present
+      loop: '{{ kube_packages }}'
+      when: item not in ansible_facts.packages
+    - name: Import the pinned sandbox image on each selected guest
+      ansible.builtin.include_tasks: ../tasks/cache_image.yml
+      vars:
+        image_request:
+          host: '{{ inventory_hostname }}'
+          image: '{{ sandbox_image }}'
+      when: controller_image_cache | default(false) | bool
+    - name: Hold kubelet and kubeadm against unattended upgrades
+      ansible.builtin.dpkg_selections:
+        name: '{{ item }}'
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+    - name: Enable kubelet for kubeadm initialization or join
+      ansible.builtin.systemd_service:
+        name: kubelet
+        enabled: true
+    - name: Reconcile cached kubelet cgroup settings on existing nodes
+      ansible.builtin.import_tasks: ../tasks/kubelet_cgroups.yml
+    - name: Check for an existing kubelet configuration
+      ansible.builtin.stat:
+        path: /var/lib/kubelet/config.yaml
+      register: existing_kubelet_settings
+    - name: Enable signed serving-certificate bootstrap on existing nodes
+      ansible.builtin.lineinfile:
+        path: /var/lib/kubelet/config.yaml
+        regexp: '^serverTLSBootstrap:'
+        line: 'serverTLSBootstrap: true'
+      when: existing_kubelet_settings.stat.exists
+      notify: Restart kubelet
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+      notify: Restart kubelet
+    - name: Restart kubelet
+      ansible.builtin.systemd_service:
+        name: kubelet
+        state: restarted
+      when: '''kubelet'' in ansible_facts.packages'
+  vars_files:
+    - ../vars/common.yml
+- name: Install the matching kubectl client on the control plane
+  hosts: '{{ control_plane_hosts }}'
+  become: true
+  vars:
+    kube_version: '{{ k8s_version | default(tool_versions.kubernetes_minor) }}'
+  tasks:
+    - name: Read installed client packages
+      ansible.builtin.package_facts:
+        manager: apt
+    - name: Reject a client from a different minor release
+      ansible.builtin.assert:
+        that: ansible_facts.packages.kubectl[0].version is match('^' ~ (kube_version | regex_replace('^v',
+          '') | regex_escape) ~ '\.')
+      when: '''kubectl'' in ansible_facts.packages'
+    - name: Install kubectl on a new control plane
+      ansible.builtin.apt:
+        name: kubectl={{ kube_version | regex_replace("^v", "") }}.*
+        state: present
+      when: '''kubectl'' not in ansible_facts.packages'
+    - name: Hold kubectl against unattended upgrades
+      ansible.builtin.dpkg_selections:
+        name: kubectl
+        selection: hold
+  vars_files:
+    - ../vars/common.yml

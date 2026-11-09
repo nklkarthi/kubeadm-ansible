@@ -1,0 +1,35 @@
+---
+- name: Choose the guest binary architecture
+  ansible.builtin.set_fact:
+    istio_arch: '{{ {''x86_64'': ''amd64'', ''aarch64'': ''arm64''}[ansible_facts.architecture] }}'
+- name: Create the versioned Istio directory
+  ansible.builtin.file:
+    path: /opt/istio
+    state: directory
+    mode: '0755'
+- name: Check the versioned Istio CLI
+  ansible.builtin.stat:
+    path: /opt/istio/istio-{{ istio_version }}/bin/istioctl
+  register: istio_cli_file
+- name: Download and verify the complete pinned Istio distribution
+  when: not istio_cli_file.stat.exists
+  ansible.builtin.include_tasks: download_file.yml
+  vars:
+    download_spec:
+      url: https://github.com/istio/istio/releases/download/{{ istio_version }}/istio-{{ istio_version }}-linux-{{
+        istio_arch }}.tar.gz
+      checksum: sha256:https://github.com/istio/istio/releases/download/{{ istio_version }}/istio-{{ istio_version
+        }}-linux-{{ istio_arch }}.tar.gz.sha256
+      dest: /opt/istio/istio-{{ istio_version }}-{{ istio_arch }}.tar.gz
+      mode: '0644'
+- name: Extract the matching CLI and sample manifests
+  ansible.builtin.unarchive:
+    src: /opt/istio/istio-{{ istio_version }}-{{ istio_arch }}.tar.gz
+    dest: /opt/istio
+    remote_src: true
+    creates: /opt/istio/istio-{{ istio_version }}/bin/istioctl
+  when: not istio_cli_file.stat.exists
+- name: Remove the downloaded Istio archive after extraction
+  ansible.builtin.file:
+    path: /opt/istio/istio-{{ istio_version }}-{{ istio_arch }}.tar.gz
+    state: absent

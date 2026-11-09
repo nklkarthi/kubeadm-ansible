@@ -1,0 +1,11 @@
+---
+- name: Ensure the add-on namespace exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - -f
+      - "-"
+    stdin: "{{ {'apiVersion': 'v1', 'kind': 'Namespace', 'metadata': {'name': addon_namespace}} | to_json }}"
+  register: namespace_apply
+  changed_when: "'created' in namespace_apply.stdout or 'configured' in namespace_apply.stdout"

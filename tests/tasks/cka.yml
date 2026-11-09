@@ -1,0 +1,80 @@
+---
+- name: Verify core workload reconciliation and service delivery
+  ansible.builtin.include_tasks: kcna.yml
+- name: Verify dynamic storage and ingress APIs
+  ansible.builtin.include_tasks: storage_routes.yml
+- name: Read node resource metrics through the aggregated API
+  ansible.builtin.command: kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
+  register: cka_node_metrics
+  changed_when: false
+  until: cka_node_metrics.rc == 0 and (cka_node_metrics.stdout | from_json)['items'] | length == groups[cluster_hosts]
+    | length
+  retries: 12
+  delay: 5
+- name: Validate a recoverable etcd snapshot without replacing live data
+  block:
+    - name: Save an authenticated etcd snapshot
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - kube-system
+          - etcd-{{ ansible_facts.hostname }}
+          - --
+          - etcdctl
+          - --endpoints=https://127.0.0.1:2379
+          - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+          - --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt
+          - --key=/etc/kubernetes/pki/etcd/healthcheck-client.key
+          - snapshot
+          - save
+          - /var/lib/etcd/certification-snapshot.db
+      changed_when: true
+    - name: Verify the saved snapshot's integrity
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - kube-system
+          - etcd-{{ ansible_facts.hostname }}
+          - --
+          - etcdutl
+          - snapshot
+          - status
+          - /var/lib/etcd/certification-snapshot.db
+          - --write-out=json
+      register: cka_snapshot_status
+      changed_when: false
+    - name: Restore the snapshot into a separate disposable directory
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - kube-system
+          - etcd-{{ ansible_facts.hostname }}
+          - --
+          - etcdutl
+          - snapshot
+          - restore
+          - /var/lib/etcd/certification-snapshot.db
+          - --data-dir=/var/lib/etcd/certification-restore
+      changed_when: true
+  always:
+    - name: Remove only the test snapshot and isolated restore directory
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: absent
+      loop:
+        - /var/lib/etcd/certification-snapshot.db
+        - /var/lib/etcd/certification-restore
+- name: Record verified administration capabilities
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + [''trusted kubelet serving certificates
+      support node metrics'', ''authenticated etcd snapshot creation and integrity verification'', ''etcd snapshot
+      restores into an isolated data directory''] }}'
+- name: Verify API and etcd quorum failover in the selected HA topology
+  ansible.builtin.include_tasks: ha_failover.yml
+  when: groups[control_plane_hosts] | length > 1

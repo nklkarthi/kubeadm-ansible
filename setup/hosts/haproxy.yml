@@ -1,0 +1,63 @@
+---
+- name: Configure a small TCP load balancer for the Kubernetes API
+  hosts: ha_load_balancer
+  become: true
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    ha_api_port: 8443
+  tasks:
+    - name: Require a distinct API load balancer and at least three control planes
+      ansible.builtin.assert:
+        that:
+          - groups[control_plane_hosts] | length >= 3
+          - inventory_hostname not in groups[control_plane_hosts]
+          - control_plane_endpoint == (node_ip | default(ansible_facts.default_ipv4.address)) ~ ':' ~ (ha_api_port | string)
+    - name: Install the operating system's supported TCP proxy and firewall
+      ansible.builtin.apt:
+        name: [haproxy, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Validate and install the selected API backends
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        mode: '0644'
+        validate: /usr/sbin/haproxy -c -f %s
+        content: |
+          global
+            log /dev/log local0
+            user haproxy
+            group haproxy
+            daemon
+          defaults
+            log global
+            mode tcp
+            option tcplog
+            timeout connect 5s
+            timeout client 1h
+            timeout server 1h
+          frontend kubernetes_api
+            bind *:{{ ha_api_port }}
+            default_backend control_planes
+          backend control_planes
+            balance roundrobin
+            option tcp-check
+          {% for host in groups[control_plane_hosts] %}
+            server control-plane-{{ loop.index }} {{ hostvars[host].node_ip | default(host) }}:6443 check inter 2s fall 2 rise 1
+          {% endfor %}
+      notify: Reload HAProxy
+    - name: Permit the configured API endpoint through the lab firewall
+      ansible.builtin.command: ufw allow {{ ha_api_port }}/tcp
+      register: ha_api_firewall
+      changed_when: "'Rule added' in ha_api_firewall.stdout or 'Rules updated' in ha_api_firewall.stdout"
+    - name: Enable the API load balancer
+      ansible.builtin.systemd_service:
+        name: haproxy
+        enabled: true
+        state: started
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.systemd_service:
+        name: haproxy
+        state: reloaded

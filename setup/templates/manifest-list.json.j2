@@ -1,0 +1,75 @@
+{%- set output = namespace(items=[]) -%}
+{%- for original in manifest_objects -%}
+  {%- set resource = namespace(value=original) -%}
+  {%- if manifest_source_namespace | default(addon_namespace) != addon_namespace -%}
+    {%- if original.metadata.namespace | default('') == (manifest_source_namespace | default(addon_namespace)) -%}
+      {%- set resource.value = resource.value | combine({'metadata': {'namespace': addon_namespace}}, recursive=true) -%}
+    {%- endif -%}
+    {%- if original.kind == 'Namespace' and original.metadata.name == (manifest_source_namespace | default(addon_namespace)) -%}
+      {%- set resource.value = resource.value | combine({'metadata': {'name': addon_namespace}}, recursive=true) -%}
+    {%- endif -%}
+    {%- if original.subjects is defined -%}
+      {%- set subjects = namespace(items=[]) -%}
+      {%- for subject in original.subjects -%}
+        {%- set updated = subject | combine({'namespace': addon_namespace}) if subject.kind == 'ServiceAccount' and subject.namespace | default('') == (manifest_source_namespace | default(addon_namespace)) else subject -%}
+        {%- set subjects.items = subjects.items + [updated] -%}
+      {%- endfor -%}
+      {%- set resource.value = resource.value | combine({'subjects': subjects.items}) -%}
+    {%- endif -%}
+  {%- endif -%}
+  {%- for patch in manifest_patches | default([]) -%}
+    {%- if original.kind == patch.kind and original.metadata.name == patch.name -%}
+      {%- set resource.value = resource.value | combine(patch.value | default({}), recursive=true) -%}
+      {%- if patch.container_env is defined or patch.container_args is defined or patch.container_resources is defined -%}
+        {%- set containers = namespace(items=[]) -%}
+        {%- for base_container in resource.value.spec.template.spec.containers -%}
+          {%- set container = namespace(value=base_container) -%}
+          {%- if base_container.name in patch.container_resources | default({}) -%}
+            {%- set container.value = container.value | combine({'resources': patch.container_resources[base_container.name]}) -%}
+          {%- endif -%}
+          {%- if base_container.name in patch.container_env | default({}) -%}
+            {%- set desired_env = patch.container_env[base_container.name] -%}
+            {%- set env = namespace(items=base_container.env | default([]) | rejectattr('name', 'in', desired_env.keys() | list) | list) -%}
+            {%- for key, value in desired_env.items() -%}
+              {%- set env.items = env.items + [{'name': key, 'value': value | string}] -%}
+            {%- endfor -%}
+            {%- set container.value = container.value | combine({'env': env.items}) -%}
+          {%- endif -%}
+          {%- if base_container.name in patch.container_args | default({}) -%}
+            {%- set change = patch.container_args[base_container.name] -%}
+            {%- set args = namespace(items=base_container.args | default([]) | reject('in', change.remove | default([])) | list) -%}
+            {%- for arg in change.add | default([]) -%}
+              {%- if arg not in args.items -%}
+                {%- set args.items = args.items + [arg] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set container.value = container.value | combine({'args': args.items}) -%}
+          {%- endif -%}
+          {%- set containers.items = containers.items + [container.value] -%}
+        {%- endfor -%}
+        {%- set resource.value = resource.value | combine({'spec': {'template': {'spec': {'containers': containers.items}}}}, recursive=true) -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- if resource.value.spec.template.spec is defined -%}
+    {%- for group in ['containers', 'initContainers'] -%}
+      {%- if resource.value.spec.template.spec[group] is defined -%}
+        {%- set normalized = namespace(items=[]) -%}
+        {%- for container in resource.value.spec.template.spec[group] -%}
+          {%- set environment = namespace(items=[]) -%}
+          {%- for variable in container.env | default([]) -%}
+            {%- if variable.valueFrom.fieldRef is defined -%}
+              {%- set variable = variable | combine({'valueFrom': {'fieldRef': {'apiVersion': variable.valueFrom.fieldRef.apiVersion | default('v1')}}}, recursive=true) -%}
+            {%- endif -%}
+            {%- set environment.items = environment.items + [variable] -%}
+          {%- endfor -%}
+          {%- set updated = container | combine({'env': environment.items}) if container.env is defined else container -%}
+          {%- set normalized.items = normalized.items + [updated] -%}
+        {%- endfor -%}
+        {%- set resource.value = resource.value | combine({'spec': {'template': {'spec': {group: normalized.items}}}}, recursive=true) -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {%- set output.items = output.items + [resource.value] -%}
+{%- endfor -%}
+{{ {'apiVersion': 'v1', 'kind': 'List', 'items': output.items} | to_json }}

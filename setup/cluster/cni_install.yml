@@ -1,0 +1,39 @@
+---
+- name: Install or reconcile one CNI without replacing a different provider
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    cni: '{{ cni_plugin | default(''calico'') }}'
+    calico_version: '{{ calico_ver | default(tool_versions.calico) }}'
+    cilium_version: '{{ cilium_ver | default(tool_versions.cilium) }}'
+  tasks:
+    - name: Run tasks/cni.yml
+      ansible.builtin.import_tasks: ../tasks/cni.yml
+    - name: Wait for daemonset/calico-node
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - daemonset/calico-node
+          - -n
+          - kube-system
+          - --timeout=300s
+      changed_when: false
+      when: cni == 'calico'
+    - name: Wait for deployment/calico-kube-controllers
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/calico-kube-controllers
+          - -n
+          - kube-system
+          - --timeout=300s
+      changed_when: false
+      when: cni == 'calico'
+  vars_files:
+    - ../vars/common.yml

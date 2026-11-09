@@ -1,0 +1,137 @@
+---
+- name: Prepare a small workload for in-cluster OTLP requests
+  ansible.builtin.include_tasks: kcna.yml
+  when: certification_verify_core | default(true) | bool
+- name: Identify this test's telemetry
+  ansible.builtin.set_fact:
+    otel_test_marker: "{{ test_namespace }}-telemetry"
+- name: Read a current timestamp for trace telemetry
+  ansible.builtin.command: date +%s%N
+  register: otel_test_timestamp
+  changed_when: false
+- name: Deliver logs, metrics and traces to the configured Collector pipelines
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ test_namespace }}"
+      - deployment/web
+      - --
+      - wget
+      - -qO-
+      - --header=Content-Type:application/json
+      - --post-data={{ item.body | to_json }}
+      - http://otel-collector.opentelemetry.svc.cluster.local:4318/v1/{{ item.signal }}
+  loop:
+    - signal: logs
+      body:
+        resourceLogs:
+          - resource:
+              attributes:
+                - key: service.name
+                  value:
+                    stringValue: "{{ otel_test_marker }}"
+            scopeLogs:
+              - scope:
+                  name: certification
+                logRecords:
+                  - severityNumber: 9
+                    severityText: INFO
+                    body:
+                      stringValue: "{{ otel_test_marker }}"
+    - signal: metrics
+      body:
+        resourceMetrics:
+          - resource:
+              attributes:
+                - key: service.name
+                  value:
+                    stringValue: "{{ otel_test_marker }}"
+            scopeMetrics:
+              - scope:
+                  name: certification
+                metrics:
+                  - name: certification_requests
+                    gauge:
+                      dataPoints:
+                        - asInt: "1"
+    - signal: traces
+      body:
+        resourceSpans:
+          - resource:
+              attributes:
+                - key: service.name
+                  value:
+                    stringValue: "{{ otel_test_marker }}"
+            scopeSpans:
+              - scope:
+                  name: certification
+                spans:
+                  - traceId: 5b8efff798038103d269b633813fc60c
+                    spanId: e3eee6d79f7b005d
+                    name: "{{ otel_test_marker }}"
+                    kind: 1
+                    startTimeUnixNano: "{{ otel_test_timestamp.stdout }}"
+                    endTimeUnixNano: "{{ ((otel_test_timestamp.stdout | int) + 1000000) | string }}"
+  loop_control:
+    label: "{{ item.signal }}"
+  changed_when: false
+- name: Read the actual exported telemetry from the Collector
+  ansible.builtin.command: kubectl logs deployment/otel-collector -n opentelemetry --since=5m
+  register: otel_exported_signals
+  changed_when: false
+  until: otel_test_marker in otel_exported_signals.stdout and 'certification_requests' in otel_exported_signals.stdout and 'Trace ID' in
+    otel_exported_signals.stdout
+  retries: 12
+  delay: 5
+- name: Record verified telemetry delivery
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["OTLP HTTP receiver accepts log, metric and trace payloads", "configured memory limiter
+      and batch pipelines deliver telemetry to the debug exporter", "Collector output contains the unique test service and metric"] }}'
+- name: Send SDK-generated telemetry over OTLP gRPC
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  loop: [traces, metrics, logs]
+  loop_control:
+    loop_var: sdk_signal
+  vars:
+    manifest_definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: sdk-{{ sdk_signal }}
+        namespace: '{{ test_namespace }}'
+      spec:
+        backoffLimit: 0
+        activeDeadlineSeconds: 120
+        template:
+          spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            containers:
+              - name: generator
+                image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:{{ tool_versions.otel_telemetrygen }}
+                args:
+                  - '{{ sdk_signal }}'
+                  - --otlp-endpoint=otel-collector.opentelemetry.svc.cluster.local:4317
+                  - --otlp-insecure
+                  - --duration=2s
+                  - --rate=2
+                  - '--otlp-attributes=service.name="{{ otel_test_marker }}-sdk-{{ sdk_signal }}"'
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+                  limits: {cpu: 200m, memory: 128Mi}
+- name: Require each SDK generator to finish successfully
+  ansible.builtin.command: kubectl wait job/sdk-{{ item }} -n {{ test_namespace }} --for=condition=Complete --timeout=180s
+  loop: [traces, metrics, logs]
+  changed_when: false
+- name: Require all SDK-generated signals in the Collector output
+  ansible.builtin.command: kubectl logs deployment/otel-collector -n opentelemetry --since=5m
+  register: otel_sdk_export
+  changed_when: false
+  until: (otel_test_marker ~ '-sdk-traces') in otel_sdk_export.stdout and (otel_test_marker ~ '-sdk-metrics') in otel_sdk_export.stdout and (otel_test_marker ~ '-sdk-logs') in otel_sdk_export.stdout
+  retries: 12
+  delay: 5
+- name: Record verified SDK export behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["the official SDK-based generator exports traces, metrics and logs over OTLP gRPC", "resource attributes survive the Collector processing pipeline"] }}'

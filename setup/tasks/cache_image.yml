@@ -1,0 +1,68 @@
+---
+- name: Check whether the scheduled guest already has the image
+  ansible.builtin.command:
+    argv:
+      - crictl
+      - inspecti
+      - "{{ image_request.image }}"
+  register: cached_guest_image
+  changed_when: false
+  failed_when: false
+  no_log: true
+  delegate_to: "{{ image_request.host }}"
+- name: Import only missing images from the controller cache
+  when: cached_guest_image.rc != 0
+  block:
+    - name: Select a platform-specific image archive
+      ansible.builtin.set_fact:
+        cached_image_platform: linux/{{ "arm64" if hostvars[image_request.host].ansible_facts.architecture | default("x86_64") in ["aarch64", "arm64"] else
+          "amd64" }}
+    - name: Select the private archive path
+      ansible.builtin.set_fact:
+        cached_image_archive: '{{ repository_root }}/artifacts/images/{{ (image_request.image ~ cached_image_platform) | hash("sha256") }}.tar'
+        guest_image_archive: /tmp/cert-image-{{ (image_request.image ~ cached_image_platform) | hash("sha256") }}.tar
+    - name: Create the private controller image cache
+      ansible.builtin.file:
+        path: "{{ repository_root }}/artifacts/images"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+    - name: Pull the image once through the controller connection
+      delegate_to: localhost
+      become: false
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          cert_image_path={{ cached_image_archive | quote }}
+          cert_image_partial="${cert_image_path}.partial"
+          trap 'rm -f "$cert_image_partial"' EXIT
+          {{ (repository_root ~ '/.tools/bin/crane') | quote }} pull --platform {{ cached_image_platform | quote }} {{ image_request.image | quote }} "$cert_image_partial"
+          mv "$cert_image_partial" "$cert_image_path"
+        creates: "{{ cached_image_archive }}"
+      throttle: 1
+    - name: Transfer and import the required image
+      block:
+        - name: Transfer the archive to the scheduled guest
+          ansible.builtin.copy:
+            src: "{{ cached_image_archive }}"
+            dest: "{{ guest_image_archive }}"
+            mode: "0600"
+          delegate_to: "{{ image_request.host }}"
+        - name: Import the image into Kubernetes' containerd namespace
+          ansible.builtin.command:
+            argv:
+              - ctr
+              - --namespace
+              - k8s.io
+              - images
+              - import
+              - "{{ guest_image_archive }}"
+          delegate_to: "{{ image_request.host }}"
+          changed_when: true
+      always:
+        - name: Remove the guest transfer archive
+          ansible.builtin.file:
+            path: "{{ guest_image_archive }}"
+            state: absent
+          delegate_to: "{{ image_request.host }}"

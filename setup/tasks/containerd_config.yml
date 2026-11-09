@@ -1,0 +1,100 @@
+---
+- name: Read the runtime configuration without exposing registry credentials
+  ansible.builtin.slurp:
+    src: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+  register: runtime_source
+  no_log: true
+- name: Detect the runtime configuration schema
+  ansible.builtin.set_fact:
+    original_runtime_schema: '{{ runtime_source.content | b64decode | regex_search("(?m)^version\s*=\s*([0-9]+)",
+      "\1") | default(["1"], true) | first | int }}'
+  no_log: true
+- name: Migrate package-provided legacy configuration with containerd itself
+  when: original_runtime_schema | int < 3
+  block:
+    - name: Render the supported configuration without discarding existing settings
+      ansible.builtin.command:
+        argv:
+          - containerd
+          - --config
+          - '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+          - config
+          - migrate
+      register: migrated_runtime
+      changed_when: false
+      no_log: true
+    - name: Back up and install the migrated configuration
+      ansible.builtin.copy:
+        dest: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+        content: |
+          {{ migrated_runtime.stdout }}
+        mode: '0600'
+        backup: true
+      notify: Restart containerd
+      no_log: true
+- name: Read the current runtime configuration after migration
+  ansible.builtin.slurp:
+    src: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+  register: runtime_source
+  no_log: true
+- name: Read the top-level runtime version and arrays
+  ansible.builtin.set_fact:
+    runtime_config_text: '{{ runtime_source.content | b64decode }}'
+    runtime_config_version: '{{ runtime_source.content | b64decode | regex_search(''(?m)^version\s*=\s*([0-9]+)'',
+      ''\1'') | first | int }}'
+    runtime_imports: '{{ (runtime_source.content | b64decode | regex_search(''(?ms)^imports\s*=\s*(\[[^\]]*\])'',
+      ''\1'') | default([''[]''], true) | first) | from_yaml }}'
+    runtime_disabled_plugins: '{{ (runtime_source.content | b64decode | regex_search(''(?ms)^disabled_plugins\s*=\s*(\[[^\]]*\])'',
+      ''\1'') | default([''[]''], true) | first) | from_yaml }}'
+  no_log: true
+- name: Require a containerd 2.x configuration
+  ansible.builtin.assert:
+    that:
+      - runtime_config_version | int >= 3
+      - runtime_imports is sequence and runtime_imports is not string
+      - runtime_disabled_plugins is sequence and runtime_disabled_plugins is not string
+    fail_msg: Migrate older containerd configurations explicitly before using this bootstrap.
+- name: Create the runtime drop-in directory
+  ansible.builtin.file:
+    path: '{{ containerd_dropin_dir | default("/etc/containerd/conf.d") }}'
+    state: directory
+    mode: '0755'
+- name: Add the managed drop-in path while preserving other imports
+  ansible.builtin.replace:
+    path: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+    regexp: (?ms)^imports\s*=\s*\[[^\]]*\]
+    replace: imports = {{ (runtime_imports + [(containerd_dropin_dir | default('/etc/containerd/conf.d')) ~
+      '/*.toml']) | unique | list | to_json }}
+    backup: true
+  when: runtime_config_text is search('(?m)^imports\s*=')
+  notify: Restart containerd
+- name: Add imports to configurations without an imports key
+  ansible.builtin.lineinfile:
+    path: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+    insertafter: ^version\s*=
+    line: imports = {{ [(containerd_dropin_dir | default('/etc/containerd/conf.d')) ~ '/*.toml'] | to_json
+      }}
+    backup: true
+  when: runtime_config_text is not search('(?m)^imports\s*=')
+  notify: Restart containerd
+- name: Enable only the CRI plugins and preserve other disabled plugins
+  ansible.builtin.replace:
+    path: '{{ containerd_config_path | default("/etc/containerd/config.toml") }}'
+    regexp: (?ms)^disabled_plugins\s*=\s*\[[^\]]*\]
+    replace: disabled_plugins = {{ runtime_disabled_plugins | reject('in', ['cri', 'io.containerd.grpc.v1.cri',
+      'io.containerd.cri.v1.runtime', 'io.containerd.cri.v1.images']) | list | to_json }}
+    backup: true
+  when: runtime_config_text is search('(?m)^disabled_plugins\s*=')
+  notify: Restart containerd
+- name: Set runc systemd cgroups through an owned drop-in
+  ansible.builtin.copy:
+    dest: '{{ containerd_dropin_dir | default("/etc/containerd/conf.d") }}/10-kubeadm-cgroups.toml'
+    mode: '0644'
+    content: |
+      # Match the kubelet's systemd cgroup hierarchy.
+      version = {{ runtime_config_version }}
+      [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+        SystemdCgroup = true
+      [plugins.'io.containerd.cri.v1.images'.pinned_images]
+        sandbox = "{{ sandbox_image | default('registry.k8s.io/pause:3.10.2') }}"
+  notify: Restart containerd

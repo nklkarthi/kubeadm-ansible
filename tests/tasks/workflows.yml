@@ -1,0 +1,77 @@
+---
+- name: Create a namespaced workflow identity with executor-only permissions
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata: {name: workflow-executor, namespace: '{{ test_namespace }}'}
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata: {name: workflow-executor, namespace: '{{ test_namespace }}'}
+          rules:
+            - apiGroups: [argoproj.io]
+              resources: [workflowtaskresults]
+              verbs: [create, patch]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata: {name: workflow-executor, namespace: '{{ test_namespace }}'}
+          roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: workflow-executor}
+          subjects:
+            - {kind: ServiceAccount, name: workflow-executor, namespace: '{{ test_namespace }}'}
+        - apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata: {name: training-dag, namespace: '{{ test_namespace }}'}
+          spec:
+            serviceAccountName: workflow-executor
+            entrypoint: pipeline
+            arguments:
+              parameters:
+                - name: message
+                  value: workflow-artifact-ready
+            templates:
+              - name: pipeline
+                dag:
+                  tasks:
+                    - name: prepare
+                      template: prepare
+                    - name: verify
+                      dependencies: [prepare]
+                      template: verify
+              - name: prepare
+                container:
+                  image: docker.io/library/busybox:1.37.0
+                  command: [echo, workflow-prepared]
+                  resources:
+                    requests: {cpu: 10m, memory: 8Mi}
+                    limits: {cpu: 100m, memory: 32Mi}
+              - name: verify
+                inputs:
+                  artifacts:
+                    - name: message
+                      path: /tmp/message
+                      raw:
+                        data: '{{ "{{ workflow.parameters.message }}" }}'
+                container:
+                  image: docker.io/library/busybox:1.37.0
+                  command: [sh, -c, 'test "$(cat /tmp/message)" = workflow-artifact-ready && echo workflow-completed']
+                  resources:
+                    requests: {cpu: 10m, memory: 8Mi}
+                    limits: {cpu: 100m, memory: 32Mi}
+- name: Require the workflow DAG to complete successfully
+  ansible.builtin.command: kubectl wait workflow/training-dag -n {{ test_namespace }} --for=jsonpath={.status.phase}=Succeeded --timeout=240s
+  changed_when: false
+- name: Read the workflow's recorded execution graph
+  ansible.builtin.command: kubectl get workflow training-dag -n {{ test_namespace }} -o json
+  register: workflows_dag
+  changed_when: false
+- name: Require both dependency-ordered task nodes to succeed
+  ansible.builtin.assert:
+    that:
+      - (workflows_dag.stdout | from_json).status.nodes.values() | selectattr('type', 'equalto', 'Pod') | selectattr('phase', 'equalto', 'Succeeded') | list | length == 2
+- name: Record verified workflow execution
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Argo Workflows executes a dependency-ordered DAG with a narrowly scoped executor identity", "workflow parameters are delivered as an input artifact and verified by the task"] }}'

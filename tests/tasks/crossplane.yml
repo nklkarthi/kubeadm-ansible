@@ -1,0 +1,134 @@
+---
+- name: Exercise an isolated self-service API backed by a composition
+  block:
+    - name: Define a namespaced platform API and its minimal permissions
+      ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: v1
+          kind: List
+          items:
+            - apiVersion: rbac.authorization.k8s.io/v1
+              kind: Role
+              metadata:
+                name: composition-config
+                namespace: '{{ test_namespace }}'
+              rules:
+                - apiGroups: ['']
+                  resources: [configmaps]
+                  verbs: [get, list, watch, create, update, patch, delete]
+            - apiVersion: rbac.authorization.k8s.io/v1
+              kind: RoleBinding
+              metadata:
+                name: composition-config
+                namespace: '{{ test_namespace }}'
+              subjects:
+                - kind: ServiceAccount
+                  name: crossplane
+                  namespace: crossplane-system
+              roleRef:
+                apiGroup: rbac.authorization.k8s.io
+                kind: Role
+                name: composition-config
+            - apiVersion: apiextensions.crossplane.io/v2
+              kind: CompositeResourceDefinition
+              metadata:
+                name: practiceapps.{{ test_namespace }}.lab.example
+              spec:
+                scope: Namespaced
+                group: '{{ test_namespace }}.lab.example'
+                names:
+                  kind: PracticeApp
+                  plural: practiceapps
+                versions:
+                  - name: v1alpha1
+                    served: true
+                    referenceable: true
+                    schema:
+                      openAPIV3Schema:
+                        type: object
+                        properties:
+                          spec:
+                            type: object
+                            required: [message]
+                            properties:
+                              message:
+                                type: string
+    - name: Require the platform API to become established
+      ansible.builtin.command: kubectl wait compositeresourcedefinition/practiceapps.{{ test_namespace }}.lab.example --for=condition=Established --timeout=120s
+      changed_when: false
+    - name: Declare how requests produce a native Kubernetes resource
+      ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: apiextensions.crossplane.io/v1
+          kind: Composition
+          metadata:
+            name: '{{ test_namespace }}'
+          spec:
+            compositeTypeRef:
+              apiVersion: '{{ test_namespace }}.lab.example/v1alpha1'
+              kind: PracticeApp
+            mode: Pipeline
+            pipeline:
+              - step: configure-service
+                functionRef:
+                  name: function-patch-and-transform
+                input:
+                  apiVersion: pt.fn.crossplane.io/v1beta1
+                  kind: Resources
+                  resources:
+                    - name: app-config
+                      base:
+                        apiVersion: v1
+                        kind: ConfigMap
+                        metadata:
+                          name: platform-request
+                          namespace: '{{ test_namespace }}'
+                        data:
+                          message: pending
+                      patches:
+                        - type: FromCompositeFieldPath
+                          fromFieldPath: spec.message
+                          toFieldPath: data.message
+                      readinessChecks:
+                        - type: None
+    - name: Submit an application request through the new platform API
+      ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: '{{ test_namespace }}.lab.example/v1alpha1'
+          kind: PracticeApp
+          metadata:
+            name: requested-app
+            namespace: '{{ test_namespace }}'
+          spec:
+            message: self-service-request-fulfilled
+            crossplane:
+              compositionRef:
+                name: '{{ test_namespace }}'
+    - name: Verify the composition fulfilled the request
+      ansible.builtin.command: kubectl get configmap/platform-request -n {{ test_namespace }} -o jsonpath={.data.message}
+      register: crossplane_request
+      changed_when: false
+      until: crossplane_request.rc == 0 and crossplane_request.stdout == 'self-service-request-fulfilled'
+      retries: 36
+      delay: 5
+    - name: Require the composite resource to report readiness
+      ansible.builtin.command: kubectl wait practiceapps.{{ test_namespace }}.lab.example/requested-app -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+      changed_when: false
+  always:
+    - name: Remove the test composite and its managed resource before its API
+      ansible.builtin.command: kubectl delete practiceapps.{{ test_namespace }}.lab.example requested-app -n {{ test_namespace }} --ignore-not-found --wait=true --timeout=120s
+      register: crossplane_test_removed
+      failed_when: crossplane_test_removed.rc != 0 and 'doesn\'t have a resource type' not in crossplane_test_removed.stderr
+      changed_when: "'deleted' in crossplane_test_removed.stdout"
+    - name: Remove the isolated composition
+      ansible.builtin.command: kubectl delete composition {{ test_namespace }} --ignore-not-found --wait=true --timeout=120s
+      changed_when: true
+    - name: Remove only the isolated platform API definition
+      ansible.builtin.command: kubectl delete compositeresourcedefinition practiceapps.{{ test_namespace }}.lab.example --ignore-not-found --wait=true --timeout=120s
+      changed_when: true
+- name: Record the verified self-service API behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["a namespaced platform API validates application requests", "a composition function transforms the request into a native Kubernetes resource", "the platform request reports readiness after fulfillment"] }}'

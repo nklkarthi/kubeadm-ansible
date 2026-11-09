@@ -1,0 +1,62 @@
+---
+- name: Read the identity of an existing node
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/kubelet.conf
+  register: existing_node_identity
+  when: existing_join_config.stat.exists
+  no_log: true
+- name: Reject membership in a different cluster
+  ansible.builtin.assert:
+    that: ((existing_node_identity.content | b64decode | from_yaml).clusters[0].cluster['certificate-authority-data'] | default('')) == hostvars[groups[control_plane_hosts][0]].cluster_ca.content
+    fail_msg: This node belongs to another cluster. Inspect it and explicitly reset it before changing membership.
+  when: existing_join_config.stat.exists
+- name: Ensure the kubelet's configured static-pod directory exists on joined nodes
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests
+    state: directory
+    mode: '0700'
+- name: Join only nodes without existing membership
+  when: not existing_join_config.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the Kubernetes configuration directory
+      ansible.builtin.file:
+        path: /etc/kubernetes
+        state: directory
+        mode: '0755'
+    - name: Write the short-lived node join configuration
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/kubeadm-join.yaml
+        mode: '0600'
+        content: '{{ node_join_configuration | combine(control_plane_join_configuration if join_control_plane | default(false) | bool else {}) | to_nice_yaml }}'
+      vars:
+        node_join_configuration:
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: '{{ hostvars[groups[control_plane_hosts][0]].discovery_endpoint.stdout | regex_replace("^https://", "") }}'
+              token: '{{ hostvars[groups[control_plane_hosts][0]].bootstrap_token.stdout }}'
+              caCertHashes: ['sha256:{{ hostvars[groups[control_plane_hosts][0]].discovery_hash.stdout.split()[-1] }}']
+          nodeRegistration:
+            name: '{{ ansible_facts.hostname }}'
+            criSocket: unix:///run/containerd/containerd.sock
+            kubeletExtraArgs:
+              - name: node-ip
+                value: '{{ node_ip | default(ansible_facts.default_ipv4.address) }}'
+        control_plane_join_configuration:
+          controlPlane:
+            certificateKey: '{{ hostvars[groups[control_plane_hosts][0]].control_plane_certificate_key.stdout | trim }}'
+            localAPIEndpoint:
+              advertiseAddress: '{{ node_ip | default(ansible_facts.default_ipv4.address) }}'
+      no_log: true
+    - name: Join the selected cluster and role
+      ansible.builtin.command:
+        argv: [kubeadm, join, --config, /etc/kubernetes/kubeadm-join.yaml]
+        creates: /etc/kubernetes/kubelet.conf
+      no_log: true
+      changed_when: true
+  always:
+    - name: Remove the bootstrap credentials after the join attempt
+      ansible.builtin.file:
+        path: /etc/kubernetes/kubeadm-join.yaml
+        state: absent

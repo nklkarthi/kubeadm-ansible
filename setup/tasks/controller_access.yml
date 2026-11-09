@@ -1,0 +1,22 @@
+---
+- name: Choose a distinct kubeconfig for this control plane on the controller
+  ansible.builtin.set_fact:
+    controller_kubeconfig: '{{ repository_root }}/artifacts/{{ inventory_hostname | hash(''sha1'') }}.kubeconfig'
+- name: Protect the controller credentials directory
+  delegate_to: localhost
+  become: false
+  ansible.builtin.file:
+    path: '{{ repository_root }}/artifacts'
+    state: directory
+    mode: '0700'
+- name: Fetch credentials without modifying their API endpoint or CA
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: '{{ controller_kubeconfig }}'
+    flat: true
+- name: Restrict controller credentials to the current user
+  delegate_to: localhost
+  become: false
+  ansible.builtin.file:
+    path: '{{ controller_kubeconfig }}'
+    mode: '0600'

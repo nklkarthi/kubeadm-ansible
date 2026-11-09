@@ -1,0 +1,49 @@
+---
+- name: Check whether this node has joined the cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: joined_kubelet
+- name: Check whether the selected control plane is initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  delegate_to: '{{ groups[control_plane_hosts][0] }}'
+  run_once: true
+  register: initialized_api
+- name: Read serving-bootstrap settings on an existing node
+  ansible.builtin.slurp:
+    src: /var/lib/kubelet/config.yaml
+  register: cgroup_kubelet_source
+  when: joined_kubelet.stat.exists
+  no_log: true
+- name: Check whether the signed kubelet serving certificate is available
+  ansible.builtin.stat:
+    path: /var/lib/kubelet/pki/kubelet-server-current.pem
+  register: cgroup_serving_certificate
+  when: joined_kubelet.stat.exists
+- name: Reconcile the active driver on existing nodes
+  when:
+    - joined_kubelet.stat.exists and initialized_api.stat.exists
+    - not ((cgroup_kubelet_source.content | b64decode | from_yaml).serverTLSBootstrap | default(false) | bool) or cgroup_serving_certificate.stat.exists
+  block:
+    - name: Read the active kubelet configuration through the API
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - get
+          - --raw
+          - /api/v1/nodes/{{ ansible_facts.hostname }}/proxy/configz
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+      register: live_kubelet_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+    - name: Refresh a kubelet that cached the former runtime cgroup driver
+      ansible.builtin.systemd_service:
+        name: kubelet
+        state: restarted
+      when: (live_kubelet_config.stdout | from_json).kubeletconfig.cgroupDriver != 'systemd'
+      register: kubelet_driver_refresh
+- name: Record node cgroup migration for network pod refresh
+  ansible.builtin.set_fact:
+    kubelet_cgroup_updated: '{{ kubelet_driver_refresh.changed | default(false) | bool }}'

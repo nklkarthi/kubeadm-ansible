@@ -1,0 +1,16 @@
+{%- set output = namespace(items=[]) -%}
+{%- for pod in (pending_image_pods.stdout | from_json)['items'] -%}
+  {%- if pod.status.phase | default('Pending') == 'Pending' and pod.spec.nodeName is defined -%}
+    {%- for host in groups[cluster_hosts] -%}
+      {%- if pod.spec.nodeName == (hostvars[host].node_name | default(hostvars[host].ansible_facts.hostname | default(host))) -%}
+        {%- for container in (pod.spec.containers | default([])) + (pod.spec.initContainers | default([])) -%}
+          {%- set entry = {'host': host, 'image': container.image} -%}
+          {%- if entry not in output.items -%}
+            {%- set output.items = output.items + [entry] -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ output.items | to_json }}

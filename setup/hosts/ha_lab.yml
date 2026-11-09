@@ -1,0 +1,28 @@
+---
+- name: Select the disposable high availability topology
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Require the explicit three-control-plane inventory
+      ansible.builtin.assert:
+        that:
+          - groups[control_plane_hosts] | length == 3
+          - groups[worker_hosts] | length == 1
+          - groups['ha_load_balancer'] | default([]) | length == 1
+          - control_plane_endpoint is defined
+    - name: Stop the unused worker to release memory for the two small control planes
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', halt, worker-02]
+      changed_when: true
+- name: Provision only the VMs selected for the HA exercise
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_nodes: [master, worker-01, ha-01, ha-02]
+- name: Prepare the stable Kubernetes API endpoint
+  import_playbook: haproxy.yml
+- name: Verify CPU and network stability before installing the HA cluster
+  import_playbook: ../../tests/local_vms.yml

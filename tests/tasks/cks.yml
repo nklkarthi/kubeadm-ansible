@@ -1,0 +1,106 @@
+---
+- name: Deploy isolated runtime and kernel confinement probes
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: sandbox
+            namespace: '{{ test_namespace }}'
+          spec:
+            runtimeClassName: gvisor
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              seccompProfile: {type: RuntimeDefault}
+            containers:
+              - name: sandbox
+                image: docker.io/library/busybox:1.37.0
+                command: [sleep, '3600']
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 250m, memory: 128Mi}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities: {drop: [ALL]}
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: runtime-probe
+            namespace: '{{ test_namespace }}'
+          spec:
+            automountServiceAccountToken: false
+            securityContext:
+              seccompProfile: {type: RuntimeDefault}
+            containers:
+              - name: probe
+                image: docker.io/library/busybox:1.37.0
+                command: [sleep, '3600']
+                resources:
+                  requests: {cpu: 10m, memory: 8Mi}
+                  limits: {cpu: 100m, memory: 32Mi}
+                securityContext:
+                  appArmorProfile: {type: RuntimeDefault}
+                  allowPrivilegeEscalation: false
+                  capabilities: {drop: [ALL]}
+- name: Wait for both security probes to start under their selected runtimes
+  ansible.builtin.command: kubectl wait pod/sandbox pod/runtime-probe -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+  changed_when: false
+- name: Read the sandbox kernel interface
+  ansible.builtin.command: kubectl exec sandbox -n {{ test_namespace }} -- uname -r
+  register: cks_sandbox_kernel
+  changed_when: false
+- name: Require the sandbox to expose its isolated kernel interface
+  ansible.builtin.assert:
+    that:
+      - cks_sandbox_kernel.stdout | trim | length > 0
+      - cks_sandbox_kernel.stdout | trim != ansible_facts.kernel
+- name: Read the workload's effective AppArmor confinement
+  ansible.builtin.command: kubectl exec runtime-probe -n {{ test_namespace }} -- cat /proc/1/attr/current
+  register: cks_apparmor
+  changed_when: false
+- name: Require an enforced AppArmor profile in the running container
+  ansible.builtin.assert:
+    that:
+      - "'(enforce)' in cks_apparmor.stdout"
+      - "'unconfined' not in cks_apparmor.stdout"
+- name: Locate the runtime probe's actual node
+  ansible.builtin.command: kubectl get pod runtime-probe -n {{ test_namespace }} -o jsonpath={.spec.nodeName}
+  register: cks_probe_node
+  changed_when: false
+- name: Map the probe node to the managed guest
+  ansible.builtin.set_fact:
+    cks_probe_host: '{{ groups[cluster_hosts][(groups[cluster_hosts] | map("extract", hostvars, ["ansible_facts", "hostname"]) | list).index(cks_probe_node.stdout)] }}'
+- name: Generate a uniquely identifiable write inside the disposable container
+  ansible.builtin.command: kubectl exec runtime-probe -n {{ test_namespace }} -- touch /etc/{{ test_namespace }}-falco
+  changed_when: true
+- name: Require Falco to detect the test's write below etc
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - -u
+      - 'falco-{{ "modern-bpf" if falco_driver_type | default("modern_ebpf") == "modern_ebpf" else "kmod" }}.service'
+      - --since=-5min
+      - --no-pager
+      - --grep={{ test_namespace }}-falco
+  delegate_to: '{{ cks_probe_host }}'
+  register: cks_falco_detection
+  changed_when: false
+  until: cks_falco_detection.rc == 0 and (test_namespace ~ '-falco') in cks_falco_detection.stdout
+  retries: 12
+  delay: 5
+- name: Verify the pinned CIS assessment CLI is executable
+  ansible.builtin.command: kube-bench version
+  register: cks_bench_version
+  changed_when: false
+  failed_when: tool_versions.kube_bench | regex_replace('^v', '') not in cks_bench_version.stdout
+- name: Verify least privilege, admission, network isolation and audit behavior
+  ansible.builtin.include_tasks: kcsa.yml
+- name: Record the verified runtime security behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["gVisor starts a workload with an isolated kernel interface", "the running runc container has an enforced AppArmor profile", "Falco detects a uniquely identified container filesystem write", "the pinned kube-bench assessment CLI is executable"] }}'

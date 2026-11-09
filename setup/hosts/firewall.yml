@@ -1,0 +1,91 @@
+---
+- name: Configure the selected lab firewall
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  environment:
+    LC_ALL: C
+  tasks:
+    - name: Install UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Allow the inventory SSH port before enabling the firewall
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - '{{ ansible_port | default(22) }}/tcp'
+      register: ssh_rule
+      changed_when: '''Rule added'' in ssh_rule.stdout or ''Rules updated'' in ssh_rule.stdout'
+    - name: Allow cluster-node traffic using reachable node addresses
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - from
+          - '{{ hostvars[item].node_ip | default(hostvars[item].ansible_facts.default_ipv4.address) }}'
+      loop: '{{ groups[cluster_hosts] }}'
+      register: peer_rule
+      changed_when: '''Rule added'' in peer_rule.stdout or ''Rules updated'' in peer_rule.stdout'
+    - name: Allow the control-plane API
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - 6443/tcp
+      when: inventory_hostname in groups[control_plane_hosts]
+      register: api_rule
+      changed_when: '''Rule added'' in api_rule.stdout or ''Rules updated'' in api_rule.stdout'
+    - name: Allow lab NodePorts on all nodes that can host a NodePort service
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - 30000:32767/{{ item }}
+      loop:
+        - tcp
+        - udp
+      register: nodeport_rule
+      changed_when: '''Rule added'' in nodeport_rule.stdout or ''Rules updated'' in nodeport_rule.stdout'
+    - name: Allow incoming pod traffic
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - allow
+          - from
+          - '{{ pod_network_cidr | default(''10.244.0.0/16'') }}'
+      register: pod_rule
+      changed_when: '''Rule added'' in pod_rule.stdout or ''Rules updated'' in pod_rule.stdout'
+    - name: Allow routed pod traffic in both directions
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - route
+          - allow
+          - '{{ item }}'
+          - '{{ pod_network_cidr | default(''10.244.0.0/16'') }}'
+      loop:
+        - from
+        - to
+      register: pod_route
+      changed_when: '''Rule added'' in pod_route.stdout or ''Rules updated'' in pod_route.stdout'
+    - name: Read firewall status
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - status
+      changed_when: false
+      register: ufw_status
+      check_mode: false
+    - name: Enable UFW after SSH and cluster rules exist
+      ansible.builtin.command:
+        argv:
+          - ufw
+          - --force
+          - enable
+      changed_when: true
+      when: '''Status: inactive'' in ufw_status.stdout'
+  vars_files:
+    - ../vars/common.yml

@@ -1,0 +1,36 @@
+---
+- name: Select a bounded cluster maintenance operation
+  hosts: '{{ control_plane_hosts }}'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    maintenance_action: '{{ action | default(''status'') }}'
+  gather_facts: false
+  tasks:
+    - name: Validate the requested operation
+      ansible.builtin.assert:
+        that: maintenance_action in ['status', 'shutdown', 'startup']
+    - name: Read status from the selected control plane
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - nodes
+          - -o
+          - wide
+      changed_when: false
+      register: cluster_status
+      when: maintenance_action == 'status'
+    - name: Display the selected cluster status
+      ansible.builtin.debug:
+        var: cluster_status.stdout_lines
+      when: maintenance_action == 'status'
+  vars_files:
+    - ../vars/common.yml
+- name: Drain only when requested
+  import_playbook: node-shutdown.yml
+  when: action | default('status') == 'shutdown'
+- name: Uncordon only when requested
+  import_playbook: node-startup.yml
+  when: action | default('status') == 'startup'

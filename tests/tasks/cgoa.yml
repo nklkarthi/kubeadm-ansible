@@ -1,0 +1,84 @@
+---
+- name: Verify workload and service fundamentals for the delivery exercise
+  ansible.builtin.include_tasks: kcna.yml
+  when: certification_verify_core | default(true) | bool
+- name: Exercise Git reconciliation with an isolated Argo CD application
+  block:
+    - name: Declare an application from a pinned Git revision
+      ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: "{{ test_namespace }}"
+            namespace: '{{ argocd_namespace | default("argocd") }}'
+          spec:
+            project: default
+            source:
+              repoURL: https://github.com/stefanprodan/podinfo.git
+              targetRevision: '{{ tool_versions.podinfo }}'
+              path: charts/podinfo
+              helm:
+                valuesObject:
+                  replicaCount: 1
+                  resources:
+                    requests:
+                      cpu: 25m
+                      memory: 32Mi
+                    limits:
+                      cpu: 200m
+                      memory: 128Mi
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: "{{ test_namespace }}"
+            syncPolicy:
+              automated:
+                selfHeal: true
+                prune: true
+    - name: Wait for Git reconciliation to reach the pinned revision
+      ansible.builtin.command: kubectl wait application/{{ test_namespace }} -n {{ argocd_namespace | default('argocd') }}
+        --for=jsonpath={.status.sync.status}=Synced --timeout=600s
+      changed_when: false
+    - name: Import any newly requested application images
+      ansible.builtin.include_tasks: ../../setup/tasks/preload_pod_images.yml
+    - name: Wait for the reconciled application to become healthy
+      ansible.builtin.command: kubectl wait application/{{ test_namespace }} -n {{ argocd_namespace | default('argocd') }}
+        --for=jsonpath={.status.health.status}=Healthy --timeout=600s
+      changed_when: false
+    - name: Read the resources tracked by this GitOps application
+      ansible.builtin.command: kubectl get application/{{ test_namespace }} -n {{ argocd_namespace | default('argocd') }} -o json
+      register: gitops_deployment
+      changed_when: false
+    - name: Require one Git-managed application deployment
+      ansible.builtin.assert:
+        that: (gitops_deployment.stdout | from_json).status.resources | selectattr('kind', 'equalto', 'Deployment') | list | length == 1
+    - name: Select the actual workload name
+      ansible.builtin.set_fact:
+        gitops_deployment_name: '{{ ((gitops_deployment.stdout | from_json).status.resources | selectattr("kind", "equalto", "Deployment") | first).name }}'
+    - name: Introduce reversible drift into the test workload
+      ansible.builtin.command: kubectl scale deployment/{{ gitops_deployment_name }} -n {{ test_namespace }} --replicas=0
+      changed_when: true
+    - name: Verify reconciliation restores the Git-declared replica count
+      ansible.builtin.command: kubectl wait deployment/{{ gitops_deployment_name }} -n {{ test_namespace }} --for=jsonpath={.spec.replicas}=1 --timeout=180s
+      changed_when: false
+    - name: Wait for the restored application replica
+      ansible.builtin.command: kubectl rollout status deployment/{{ gitops_deployment_name }} -n {{ test_namespace }} --timeout=180s
+      changed_when: false
+    - name: Require an immutable resolved Git commit and a healthy synchronization
+      ansible.builtin.command: kubectl get application/{{ test_namespace }} -n {{ argocd_namespace | default('argocd') }} -o json
+      register: gitops_application
+      changed_when: false
+      until: (gitops_application.stdout | from_json).status.sync.status == 'Synced' and (gitops_application.stdout | from_json).status.sync.revision is
+        match('^[0-9a-f]{40}$')
+      retries: 12
+      delay: 5
+  always:
+    - name: Remove only the test's Argo CD application
+      ansible.builtin.command: kubectl delete application/{{ test_namespace }} -n {{ argocd_namespace | default('argocd') }} --ignore-not-found --wait=true
+        --timeout=120s
+      changed_when: true
+- name: Record verified GitOps behavior
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks + ["Argo CD resolves a pinned Git revision and renders its Helm chart", "automatic reconciliation
+      deploys the application", "self-healing restores a deliberately changed replica count"] }}'

@@ -1,0 +1,32 @@
+---
+- name: Wait for guest SSH connectivity before gathering facts
+  ansible.builtin.wait_for_connection:
+    timeout: 300
+- name: Read the guest hostname
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+- name: Process selected nodes
+  when: target_nodes is not defined or inventory_hostname in (target_nodes.split(',') if target_nodes is string
+    else target_nodes) or ansible_facts.hostname in (target_nodes.split(',') if target_nodes is string else
+    target_nodes)
+  block:
+    - name: Wait for the Kubernetes Ready condition
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - node/{{ ansible_facts.hostname }}
+          - --for=condition=Ready
+          - --timeout=180s
+      changed_when: false
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+    - name: Uncordon the selected node
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - uncordon
+          - '{{ ansible_facts.hostname }}'
+      changed_when: '''uncordoned'' in uncordon_result.stdout'
+      delegate_to: '{{ groups[control_plane_hosts][0] }}'
+      register: uncordon_result

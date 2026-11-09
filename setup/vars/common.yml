@@ -1,0 +1,88 @@
+---
+tool_versions:
+  kubernetes_minor: v1.37
+  calico: v3.33.0
+  cilium: 1.20.4
+  cilium_cli: v0.20.2
+  hubble_cli: v1.20.4
+  argocd: v3.6.1
+  istio: 1.31.4
+  metrics_server: v0.9.1
+  kube_bench: v0.16.0
+  cert_manager: v1.21.3
+  rancher: 2.15.3
+  gvisor: '20261102.0'
+  falco: 0.45.2
+  gitea: 28.3.0
+  bash_it: v3.2.0
+  ingress_nginx: v1.15.1
+  prometheus_stack: 93.1.0
+  helm: v4.3.1
+  crane: v0.22.1
+  argo_workflows: v4.1.6
+  argo_rollouts: v1.10.2
+  argo_events: v1.9.11
+  nats_server: 2.10.29
+  kyverno: v1.19.2
+  backstage: 1.55.2
+  backstage_chart: 2.10.2
+  crossplane: 2.4.3
+  provider_kubernetes: v1.4.1
+  crossplane_patch_transform: v0.8.2
+  traefik_chart: 42.3.1
+  local_path_provisioner: v0.0.37
+  kyverno_chart: 3.9.2
+  otel_chart: 0.178.2
+  otel_collector: 0.163.2
+  otel_telemetrygen: v0.165.0
+  gateway_api: v1.6.3
+  podinfo: 6.17.0
+manifest_checksums:
+  argocd: sha256:7be23ca7d9ca3d3074dee8332f1ca92a933b990cee7c9cf22cf3843ee8c2913e
+  workflows: sha256:d25ba490170e35002b746878233d1310c3fad2f648735e85fa8671366a29dee8
+  rollouts: sha256:b8280994791eaee7eb91c8b84450efcc6e0292fca5aafc18c1b0ebc5d18dbefe
+lab_nodeports:
+  argocd_http: 30080
+  argocd_https: 30443
+  alertmanager: 30081
+  rancher_http: 30082
+  rancher_https: 30083
+  prometheus: 30084
+  grafana: 30086
+  istio_http: 30088
+  istio_https: 30444
+  istio_prometheus: 30092
+  istio_grafana: 30093
+  istio_jaeger: 30094
+  istio_kiali: 30095
+  legacy_nginx_http: 30096
+  legacy_nginx_https: 30496
+  traefik_http: 30090
+  traefik_https: 30490
+  backstage: 30097
+  otel_http: 30418
+cluster_hosts: cluster_nodes
+control_plane_hosts: control_plane
+worker_hosts: worker_nodes
+lab_access_host: '{{ hostvars[groups[control_plane_hosts][0]].ansible_host | default(groups[control_plane_hosts][0]) }}'
+repository_root: '{{ ansible_config_file | dirname }}'
+sandbox_image: registry.k8s.io/pause:3.10.2
+helm_chart_sources:
+  cilium:
+    url: https://helm.cilium.io/cilium-1.20.4.tgz
+    checksum: sha256:505abff8385811df1a949776fc42e9f10697989a332acc86d6e8933efcb855ed
+  otel:
+    url: https://github.com/open-telemetry/opentelemetry-helm-charts/releases/download/opentelemetry-collector-0.178.2/opentelemetry-collector-0.178.2.tgz
+    checksum: sha256:4c9732611ab301e1d5532f62fa0c715c2c89765ee74f88ec1825601b3f172324
+  kyverno:
+    url: https://kyverno.github.io/kyverno/kyverno-3.9.2.tgz
+    checksum: sha256:f6fe7184544d5e2ee33a77808c09e67aa603ce6560cc197038fde31d727c861e
+  backstage:
+    url: https://github.com/backstage/charts/releases/download/backstage-2.10.2/backstage-2.10.2.tgz
+    checksum: sha256:ca5b5ff9f0a078189f0365275ebf5b845f05fb69d446a9e626edbcd96dca2b17
+  crossplane:
+    url: https://charts.crossplane.io/stable/crossplane-2.4.3.tgz
+    checksum: sha256:eeace77cdc7e727a8400cb7a229e290d4d28dd730b440a1b06fb6df4569cd33c
+  traefik:
+    url: https://traefik.github.io/charts/traefik/traefik-42.3.1.tgz
+    checksum: sha256:984969e5f6959bfc410e74e07d4062e76cbd7af0b5df1abae60e5e64d6218dcd

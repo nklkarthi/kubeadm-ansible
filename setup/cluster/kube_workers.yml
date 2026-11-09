@@ -1,0 +1,47 @@
+---
+- name: Inspect existing worker membership
+  hosts: '{{ worker_hosts }}'
+  become: true
+  tasks:
+    - name: Check existing kubelet configuration
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: worker_config
+  vars_files:
+    - ../vars/common.yml
+- name: Create bootstrap credentials only for new workers
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Run tasks/cluster_access.yml
+      ansible.builtin.import_tasks: ../tasks/cluster_access.yml
+      tags:
+        - compatibility
+    - name: Start with no pending joins
+      ansible.builtin.set_fact:
+        new_workers: []
+    - name: Collect workers that need a join token
+      ansible.builtin.set_fact:
+        new_workers: '{{ new_workers + [item] }}'
+      loop: '{{ groups[worker_hosts] }}'
+      when: not hostvars[item].worker_config.stat.exists
+    - name: Prepare shared discovery credentials for pending workers
+      ansible.builtin.import_tasks: ../tasks/join_credentials.yml
+      vars:
+        pending_join_hosts: '{{ new_workers }}'
+  vars_files:
+    - ../vars/common.yml
+- name: Join new workers without resetting existing membership
+  hosts: '{{ worker_hosts }}'
+  become: true
+  serial: 1
+  tasks:
+    - name: Join or verify the selected worker
+      ansible.builtin.import_tasks: ../tasks/join_node.yml
+      vars:
+        existing_join_config: '{{ worker_config }}'
+        join_control_plane: false
+  vars_files:
+    - ../vars/common.yml
