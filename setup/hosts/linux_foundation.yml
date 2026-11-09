@@ -4,54 +4,36 @@
   become: true
   vars_files:
     - ../vars/common.yml
+    - ../vars/linux.yml
   tasks:
-    - name: Require a supported SELinux Linux guest
+    - name: Require the Linux family selected for this certification
       ansible.builtin.assert:
         that:
-          - ansible_facts.os_family == 'RedHat'
-        fail_msg: Use the dedicated AlmaLinux inventory and Vagrant guest for SELinux exercises.
+          - certification in ['lfcs', 'lfca']
+          - ansible_facts.os_family == ('RedHat' if certification == 'lfcs' else 'Debian')
+        fail_msg: Use the AlmaLinux LFCS guest or Ubuntu LFCA guest with its matching inventory.
     - name: Read SELinux enforcement directly before installing Python administration bindings
       ansible.builtin.command: getenforce
       register: lfcs_enforcement
       changed_when: false
       failed_when: lfcs_enforcement.stdout != 'Enforcing'
-    - name: Install Linux administration and curriculum tools
+      when: ansible_facts.os_family == 'RedHat'
+    - name: Install RHEL-family Linux administration tools
       ansible.builtin.dnf:
-        name:
-          - acl
-          - at
-          - bind-utils
-          - chrony
-          - cronie
-          - curl
-          - e2fsprogs
-          - firewalld
-          - git
-          - httpd
-          - iproute
-          - iputils
-          - jq
-          - lsof
-          - lvm2
-          - man-db
-          - nftables
-          - openssh-clients
-          - openssl
-          - podman
-          - policycoreutils-python-utils
-          - procps-ng
-          - python3-libselinux
-          - rsync
-          - sos
-          - sysstat
-          - tar
-          - tcpdump
-          - vim-enhanced
-          - xfsprogs
+        name: '{{ linux_common_packages + linux_platform.packages }}'
         state: present
+      when: ansible_facts.os_family == 'RedHat'
+    - name: Install Ubuntu Linux administration tools through APT
+      ansible.builtin.apt:
+        name: '{{ linux_common_packages + linux_platform.packages }}'
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        install_recommends: false
+      when: ansible_facts.os_family == 'Debian'
     - name: Install advanced administration tools only for LFCS
       ansible.builtin.dnf:
-        name: [autofs, iscsi-initiator-utils, libvirt, nfs-utils, qemu-kvm, sssd-ldap, virt-install]
+        name: '{{ lfcs_syllabus_packages }}'
         state: present
       when: certification == 'lfcs'
     - name: Enable local libvirt socket activation for LFCS virtualization exercises
@@ -60,6 +42,24 @@
         enabled: true
         state: started
       loop: [virtqemud.socket, virtnetworkd.socket, virtnodedevd.socket, virtnwfilterd.socket, virtsecretd.socket, virtstoraged.socket, virtinterfaced.socket]
+      when: certification == 'lfcs'
+    - name: Prepare the private LFCS storage practice directory
+      ansible.builtin.file:
+        path: '{{ linux_lab_root }}/disks'
+        state: directory
+        mode: '0700'
+      when: certification == 'lfcs'
+    - name: Allocate sparse practice disks without overwriting existing exercises
+      ansible.builtin.command:
+        argv: [truncate, --size=2G, '{{ linux_lab_root }}/disks/{{ item }}.img']
+        creates: '{{ linux_lab_root }}/disks/{{ item }}.img'
+      loop: [disk1, disk2, disk3]
+      when: certification == 'lfcs'
+    - name: Restrict the practice disk files to the administrator
+      ansible.builtin.file:
+        path: '{{ linux_lab_root }}/disks/{{ item }}.img'
+        mode: '0600'
+      loop: [disk1, disk2, disk3]
       when: certification == 'lfcs'
     - name: Refresh Linux facts after installing the SELinux Python bindings
       ansible.builtin.setup:
@@ -77,41 +77,44 @@
         name: '{{ item }}'
         enabled: true
         state: started
-      loop: [chronyd, firewalld, crond, atd]
+      loop: '{{ linux_platform.services }}'
     - name: Create the dedicated practice content directory
       ansible.builtin.file:
         path: '{{ linux_lab_root }}/www'
         state: directory
         mode: '0755'
-    - name: Provide content for Linux service and SELinux exercises
+    - name: Provide content for Linux service and access-control exercises
       ansible.builtin.copy:
-        content: "lfcs-http-selinux-ready\n"
+        content: "linux-certification-http-ready\n"
         dest: '{{ linux_lab_root }}/www/index.html'
         mode: '0644'
     - name: Read persistent SELinux file mappings
       ansible.builtin.command: semanage fcontext -l -C
       register: lfcs_fcontext
       changed_when: false
+      when: ansible_facts.os_family == 'RedHat'
     - name: Persist the web content security label
       ansible.builtin.command:
         argv: [semanage, fcontext, -a, -t, httpd_sys_content_t, '{{ linux_lab_root }}/www(/.*)?']
-      when: linux_lab_root ~ '/www(/.*)?' not in lfcs_fcontext.stdout
+      when: ansible_facts.os_family == 'RedHat' and linux_lab_root ~ '/www(/.*)?' not in lfcs_fcontext.stdout
       changed_when: true
     - name: Apply the persisted SELinux labels
       ansible.builtin.command: restorecon -Rv {{ linux_lab_root }}/www
       register: lfcs_relabel
       changed_when: lfcs_relabel.stdout | length > 0
+      when: ansible_facts.os_family == 'RedHat'
     - name: Read local SELinux port mappings
       ansible.builtin.command: semanage port -l -C
       register: lfcs_ports
       changed_when: false
+      when: ansible_facts.os_family == 'RedHat'
     - name: Label the dedicated HTTP practice port
       ansible.builtin.command: semanage port -a -t http_port_t -p tcp {{ linux_http_port }}
-      when: linux_http_port | string not in lfcs_ports.stdout
+      when: ansible_facts.os_family == 'RedHat' and linux_http_port | string not in lfcs_ports.stdout
       changed_when: true
     - name: Configure the practice HTTP virtual host
       ansible.builtin.copy:
-        dest: /etc/httpd/conf.d/lfcs-lab.conf
+        dest: '{{ linux_platform.http_config }}'
         mode: '0644'
         content: |
           Listen {{ linux_http_port }}
@@ -122,22 +125,48 @@
             </Directory>
           </VirtualHost>
       notify: Reload LFCS HTTP service
+    - name: Enable the Ubuntu practice virtual host
+      ansible.builtin.file:
+        src: '{{ linux_platform.http_config }}'
+        dest: /etc/apache2/sites-enabled/linux-lab.conf
+        state: link
+      when: ansible_facts.os_family == 'Debian'
+      notify: Reload LFCS HTTP service
     - name: Keep SSH reachable through the persistent firewall
       ansible.builtin.command: firewall-cmd --permanent --add-service=ssh
       register: lfcs_ssh_firewall
       changed_when: "'ALREADY_ENABLED' not in lfcs_ssh_firewall.stderr"
       notify: Reload LFCS firewall
+      when: ansible_facts.os_family == 'RedHat'
     - name: Permit the dedicated HTTP practice port
       ansible.builtin.command: firewall-cmd --permanent --add-port={{ linux_http_port }}/tcp
       register: lfcs_http_firewall
       changed_when: "'ALREADY_ENABLED' not in lfcs_http_firewall.stderr"
       notify: Reload LFCS firewall
+      when: ansible_facts.os_family == 'RedHat'
+    - name: Allow SSH and the practice HTTP port before enabling Ubuntu's firewall
+      ansible.builtin.command:
+        argv: [ufw, allow, '{{ item }}']
+      loop: [OpenSSH, '{{ linux_http_port }}/tcp']
+      register: linux_ufw_rule
+      changed_when: '"Rule added" in linux_ufw_rule.stdout or "Rules updated" in linux_ufw_rule.stdout'
+      when: ansible_facts.os_family == 'Debian'
+    - name: Read Ubuntu firewall activation
+      ansible.builtin.command: ufw status
+      register: linux_ufw_status
+      changed_when: false
+      when: ansible_facts.os_family == 'Debian'
+    - name: Enable the Ubuntu firewall with the declared access rules
+      ansible.builtin.command: ufw --force enable
+      changed_when: true
+      when: "ansible_facts.os_family == 'Debian' and 'Status: inactive' in linux_ufw_status.stdout"
     - name: Check Apache configuration before starting it
-      ansible.builtin.command: httpd -t
+      ansible.builtin.command:
+        argv: '{{ linux_platform.http_validate }}'
       changed_when: false
     - name: Enable the practice HTTP service
       ansible.builtin.systemd_service:
-        name: httpd
+        name: '{{ linux_platform.http_service }}'
         enabled: true
         state: started
     - name: Apply service changes before functional checks
@@ -145,7 +174,7 @@
   handlers:
     - name: Reload LFCS HTTP service
       ansible.builtin.systemd_service:
-        name: httpd
+        name: '{{ linux_platform.http_service }}'
         state: reloaded
     - name: Reload LFCS firewall
       ansible.builtin.command: firewall-cmd --reload

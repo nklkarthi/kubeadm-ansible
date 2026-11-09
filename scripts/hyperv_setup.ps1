@@ -4,6 +4,7 @@ param(
     [string]$BridgeDescription = 'Realtek PCIe GbE Family Controller #3',
     [string]$WindowsUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [switch]$StartLab,
+    [switch]$RebuildLinuxVm,
     [string]$WslDistribution,
     [string]$LinuxUser,
     [string]$LabRepository,
@@ -17,6 +18,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSStyle.OutputRendering = 'PlainText'
 if ($Certifications -and $LabPlaybook) { throw 'Choose Certifications or a single LabPlaybook.' }
+if ($RebuildLinuxVm -and ($LabPlaybook -ne 'setup/hosts/linux_vms.yml' -or $Inventory -notin @('inventories/lfcs.ini','inventories/lfca.ini'))) {
+    throw 'RebuildLinuxVm requires the Linux VM playbook and a dedicated LFCS or LFCA inventory.'
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -29,6 +33,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
                         '-Inventory', ('"' + $Inventory + '"'))
         if ($LabPlaybook) { $arguments += @('-LabPlaybook', ('"' + $LabPlaybook + '"')) }
         if ($Certifications) { $arguments += @('-Certifications', ('"' + $Certifications + '"')) }
+        if ($RebuildLinuxVm) { $arguments += '-RebuildLinuxVm' }
     }
     $process = Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     exit $process.ExitCode
@@ -106,6 +111,7 @@ try {
                               $run.Playbook, '-i', $run.Inventory, '-e', 'vagrant_provider=hyperv', '-e', 'controller_image_cache=true',
                               '-e', 'download_via_controller=true')
             if ($run.Certification) { $runArguments += @('-e', ('@profiles/certifications/' + $run.Certification + '.yml')) }
+            if ($RebuildLinuxVm) { $runArguments += @('-e', 'rebuild_linux_vm=true') }
             & wsl.exe @runArguments 2>&1 | Tee-Object -FilePath $playbookLog
             if ($LASTEXITCODE -ne 0) { throw "Lab playbook $($run.Playbook) for $($run.Certification) failed with exit $LASTEXITCODE; see $playbookLog" }
             if ($run.Certification) { $completedCertifications += $run.Certification }

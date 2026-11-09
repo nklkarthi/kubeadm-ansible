@@ -1,0 +1,86 @@
+---
+- name: Execute a scheduled service with an enforced resource constraint
+  ansible.builtin.shell: |
+    set -euo pipefail
+    work=$(mktemp -d /var/tmp/lfcs-schedule.XXXXXX)
+    unit="lfcs-check-$(basename "$work" | tr -cd 'a-zA-Z0-9')"
+    cleanup() {
+      systemctl stop "$unit.timer" "$unit.service" >/dev/null 2>&1 || true
+      systemctl reset-failed "$unit.timer" "$unit.service" >/dev/null 2>&1 || true
+      rm -rf -- "$work"
+    }
+    trap cleanup EXIT
+    systemd-run --quiet --unit="$unit" --on-active=2s --timer-property=AccuracySec=1s \
+      --property=MemoryMax=64M /bin/sh -c "touch '$work/ran'; sleep 30"
+    for attempt in $(seq 1 15); do
+      if [ -f "$work/ran" ]; then break; fi
+      sleep 1
+    done
+    test -f "$work/ran"
+    test "$(systemctl show "$unit.service" --property=MemoryMax --value)" = 67108864
+    printf 'scheduled-service-and-resource-limit-verified\n'
+  args:
+    executable: /bin/bash
+  changed_when: true
+- name: Exercise Git history and certificate trust without changing global configuration
+  ansible.builtin.shell: |
+    set -euo pipefail
+    work=$(mktemp -d /var/tmp/lfcs-git-tls.XXXXXX)
+    trap 'rm -rf -- "$work"' EXIT
+    git init --quiet --initial-branch=main "$work/repo"
+    git -C "$work/repo" config user.name 'Lab User'
+    git -C "$work/repo" config user.email lab@example.invalid
+    printf 'initial\n' > "$work/repo/data"
+    git -C "$work/repo" add data
+    git -C "$work/repo" commit --quiet -m initial
+    git -C "$work/repo" switch --quiet -c feature
+    printf 'feature\n' >> "$work/repo/data"
+    git -C "$work/repo" commit --quiet -am feature
+    git -C "$work/repo" switch --quiet main
+    git -C "$work/repo" merge --quiet --ff-only feature
+    test "$(git -C "$work/repo" log -1 --format=%s)" = feature
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=LFCS-Test-CA \
+      -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
+      -keyout "$work/ca.key" -out "$work/ca.crt" >/dev/null 2>&1
+    openssl req -new -newkey rsa:2048 -nodes -subj /CN=lfcs.lab \
+      -addext subjectAltName=DNS:lfcs.lab -keyout "$work/server.key" \
+      -out "$work/server.csr" >/dev/null 2>&1
+    openssl x509 -req -in "$work/server.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" \
+      -CAcreateserial -days 1 -copy_extensions copy -out "$work/server.crt" >/dev/null 2>&1
+    openssl verify -CAfile "$work/ca.crt" -verify_hostname lfcs.lab "$work/server.crt"
+    if openssl verify -CAfile "$work/ca.crt" -verify_hostname wrong.lab "$work/server.crt" >/dev/null 2>&1; then
+      exit 1
+    fi
+    printf 'git-merge-and-tls-identity-verified\n'
+  args:
+    executable: /bin/bash
+  changed_when: true
+- name: Configure network primitives inside a disposable namespace
+  ansible.builtin.shell: |
+    set -euo pipefail
+    unshare --net /bin/bash <<'NETWORK'
+    set -euo pipefail
+    ip link set lo up
+    ip link add dummy-lab type dummy
+    ip address add 198.18.0.1/24 dev dummy-lab
+    ip -6 address add fd42:101::1/64 dev dummy-lab nodad
+    ip link set dummy-lab up
+    ip link add bridge-lab type bridge
+    ip link add bond-lab type bond mode active-backup
+    ip route add 198.19.0.0/24 via 198.18.0.2 dev dummy-lab
+    sysctl -w net.ipv4.ip_forward=1
+    test "$(sysctl -n net.ipv4.ip_forward)" = 1
+    nft add table inet lfcs_filter
+    nft 'add chain inet lfcs_filter input { type filter hook input priority 0; policy accept; }'
+    nft add table ip lfcs_nat
+    nft 'add chain ip lfcs_nat postrouting { type nat hook postrouting priority 100; }'
+    nft add rule ip lfcs_nat postrouting oifname dummy-lab masquerade
+    nft list table ip lfcs_nat | grep -q masquerade
+    ip route show 198.19.0.0/24 | grep -q 'via 198.18.0.2'
+    ping -c 1 -W 2 198.18.0.1 >/dev/null
+    ping -6 -c 1 -W 2 fd42:101::1 >/dev/null
+    printf 'isolated-network-configuration-verified\n'
+    NETWORK
+  args:
+    executable: /bin/bash
+  changed_when: true

@@ -4,12 +4,23 @@
   become: true
   vars_files:
     - ../setup/vars/common.yml
+    - ../setup/vars/linux.yml
   tasks:
-    - name: Require enforcing SELinux and the selected timezone
+    - name: Require the selected distribution and two virtual CPUs
       ansible.builtin.assert:
         that:
-          - ansible_facts.selinux.mode == 'enforcing'
+          - ansible_facts.distribution == vagrant_guest_distribution
+          - ansible_facts.distribution_version is version(vagrant_guest_release | string, '==')
           - ansible_facts.processor_vcpus | int >= 2
+    - name: Require SELinux enforcement for LFCS
+      ansible.builtin.assert:
+        that: ansible_facts.selinux.mode == 'enforcing'
+      when: certification == 'lfcs'
+    - name: Read the configured practice timezone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      register: linux_timezone
+      changed_when: false
+      failed_when: linux_timezone.stdout != timezone
     - name: Verify the practice HTTP service from the controller
       ansible.builtin.uri:
         url: 'http://{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}:{{ linux_http_port }}/'
@@ -23,8 +34,9 @@
     - name: Require the configured web content
       ansible.builtin.assert:
         that:
-          - "'lfcs-http-selinux-ready' in lfcs_http.content"
+          - "'linux-certification-http-ready' in lfcs_http.content"
     - name: Test SELinux denial and recovery using a dedicated content file
+      when: ansible_facts.os_family == 'RedHat'
       block:
         - name: Create a disposable SELinux test file
           ansible.builtin.copy:
@@ -55,6 +67,9 @@
           ansible.builtin.file:
             path: '{{ linux_lab_root }}/www/selinux-test.txt'
             state: absent
+    - name: Verify Ubuntu AppArmor confinement with an isolated named profile
+      ansible.builtin.include_tasks: tasks/linux_apparmor.yml
+      when: ansible_facts.os_family == 'Debian'
     - name: Exercise LVM on a disposable sparse loop device with guaranteed cleanup
       ansible.builtin.shell: |
         set -euo pipefail
@@ -121,9 +136,9 @@
       ansible.builtin.command: podman info --format json
       register: linux_container_info
       changed_when: false
-    - name: Require container isolation to retain SELinux enforcement
+    - name: Require the distribution's native container access control
       ansible.builtin.assert:
-        that: (linux_container_info.stdout | from_json).host.security.selinuxEnabled | bool
+        that: (linux_container_info.stdout | from_json).host.security[linux_platform.container_mac] | bool
     - name: Run a disposable resource-limited Linux container
       ansible.builtin.command:
         argv: [podman, run, --rm, --read-only, --memory=64m, --cpus=0.25, docker.io/library/busybox:1.37.0, echo, linux-container-ready]
@@ -136,6 +151,12 @@
     - name: Verify a real LFCS libvirt system connection
       ansible.builtin.command: virsh --connect qemu:///system list --all
       changed_when: false
+      when: certification == 'lfcs'
+    - name: Verify tools across every LFCS syllabus domain
+      ansible.builtin.include_tasks: tasks/lfcs_tools.yml
+      when: certification == 'lfcs'
+    - name: Exercise LFCS scheduling, Git, certificates and isolated networking
+      ansible.builtin.include_tasks: tasks/lfcs_practical.yml
       when: certification == 'lfcs'
     - name: Create the controller verification directory
       ansible.builtin.file:
@@ -150,8 +171,8 @@
         mode: '0600'
         content: '{{ {"certification": certification, "status": "passed", "verified_at_utc": now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
           "distribution": ansible_facts.distribution, "release": ansible_facts.distribution_version,
-          "vm_identities": hostvars.localhost.fresh_vm_identities | default({}), "scope": "automated Linux environment checks", "checks": ["SELinux enforcement denial and recovery", "controller-to-guest HTTP and firewall",
-          "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools", "a resource-limited read-only container executes successfully"] + (["the libvirt system connection accepts commands"] if certification == "lfcs" else []),
+          "vm_identities": hostvars.localhost.fresh_vm_identities | default({}), "scope": "automated Linux environment checks", "checks": [("SELinux enforcement denial and recovery" if ansible_facts.os_family == "RedHat" else "AppArmor allows declared content and denies protected content"), "controller-to-guest HTTP and firewall",
+          "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools", "a resource-limited read-only container executes successfully"] + (["the libvirt system connection accepts commands", "tools are available for every LFCS syllabus domain", "nested KVM domain capabilities are available", "a scheduled systemd service runs with its memory constraint", "Git branch merging and TLS trust and identity checks succeed", "IPv4, IPv6, bridge, bond, route and NAT configuration work in an isolated network namespace"] if certification == "lfcs" else []),
           "manual_study_topics": manual_study_topics | default([])} | to_nice_json }}'
       delegate_to: localhost
       become: false

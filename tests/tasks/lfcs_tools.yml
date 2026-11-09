@@ -1,0 +1,23 @@
+---
+- name: Require the curriculum commands supplied by the declared packages
+  ansible.builtin.shell: |
+    set -eu
+    for tool in {{ lfcs_syllabus_commands | map('quote') | join(' ') }}; do
+      command -v "$tool" >/dev/null || { printf 'Missing curriculum command: %s\n' "$tool"; exit 1; }
+    done
+  changed_when: false
+- name: Require nested KVM capabilities for virtual machine exercises
+  ansible.builtin.command: virsh --connect qemu:///system domcapabilities --virttype kvm
+  register: lfcs_kvm
+  changed_when: false
+  failed_when: lfcs_kvm.rc != 0 or '<domain>kvm</domain>' not in lfcs_kvm.stdout
+- name: Verify LDAP and network storage tools without starting practice servers
+  ansible.builtin.command:
+    argv: '{{ item }}'
+  loop:
+    - [ldapsearch, -VV]
+    - [dscreate, --help]
+    - [iscsiadm, --version]
+    - [targetcli, --version]
+    - [haproxy, -vv]
+  changed_when: false

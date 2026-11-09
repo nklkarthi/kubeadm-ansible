@@ -1,0 +1,53 @@
+---
+- name: Verify AppArmor is enabled in the running kernel
+  ansible.builtin.command: aa-enabled
+  changed_when: false
+- name: Allocate disposable AppArmor verification files
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: linux-apparmor-
+  register: linux_apparmor_fixture
+- name: Exercise a named profile without changing other programs' confinement
+  block:
+    - name: Create protected test content
+      ansible.builtin.copy:
+        content: confinement-test-content
+        dest: '{{ linux_apparmor_fixture.path }}/protected'
+        mode: '0644'
+    - name: Declare the isolated verification profile
+      ansible.builtin.copy:
+        dest: '{{ linux_apparmor_fixture.path }}/profile'
+        mode: '0600'
+        content: |
+          #include <tunables/global>
+          profile linux-certification-check flags=(attach_disconnected) {
+            #include <abstractions/base>
+            /usr/bin/cat rix,
+            {{ linux_lab_root }}/www/** r,
+            deny {{ linux_apparmor_fixture.path }}/protected r,
+          }
+    - name: Load only the named verification profile
+      ansible.builtin.command: apparmor_parser -r {{ linux_apparmor_fixture.path }}/profile
+      register: linux_apparmor_loaded
+      changed_when: true
+    - name: Require access to explicitly allowed content
+      ansible.builtin.command:
+        argv: [aa-exec, -p, linux-certification-check, --, /usr/bin/cat, '{{ linux_lab_root }}/www/index.html']
+      register: linux_apparmor_allowed
+      changed_when: false
+      failed_when: linux_apparmor_allowed.rc != 0 or 'linux-certification-http-ready' not in linux_apparmor_allowed.stdout
+    - name: Require denial of protected content even for root
+      ansible.builtin.command:
+        argv: [aa-exec, -p, linux-certification-check, --, /usr/bin/cat, '{{ linux_apparmor_fixture.path }}/protected']
+      register: linux_apparmor_denied
+      changed_when: false
+      failed_when: linux_apparmor_denied.rc == 0 or 'Permission denied' not in linux_apparmor_denied.stderr
+  always:
+    - name: Unload only the verification profile
+      ansible.builtin.command: apparmor_parser -R {{ linux_apparmor_fixture.path }}/profile
+      when: linux_apparmor_loaded is defined and linux_apparmor_loaded is succeeded
+      changed_when: true
+    - name: Remove the disposable verification files
+      ansible.builtin.file:
+        path: '{{ linux_apparmor_fixture.path }}'
+        state: absent
