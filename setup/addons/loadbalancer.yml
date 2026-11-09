@@ -1,0 +1,7 @@
+---
+- name: Prepare optional LoadBalancer practice using an explicitly reserved address pool
+  import_playbook: certification_stack.yml
+  vars:
+    certification_addons: [metallb]
+- name: Verify address allocation and controller-to-Service traffic
+  import_playbook: ../../tests/loadbalancer.yml

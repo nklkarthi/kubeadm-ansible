@@ -43,6 +43,7 @@ tool_versions:
   crossplane_patch_transform: v0.8.2
   traefik_chart: 42.3.1
   local_path_provisioner: v0.0.37
+  metallb: v0.16.2
   kyverno_chart: 3.9.2
   otel_chart: 0.178.2
   otel_collector: 0.163.2

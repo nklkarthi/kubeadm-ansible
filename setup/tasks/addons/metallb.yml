@@ -1,0 +1,75 @@
+---
+- name: Require an explicitly reserved LAN pool before installing an address announcer
+  ansible.builtin.assert:
+    that:
+      - metallb_addresses | default([]) is sequence
+      - metallb_addresses | default([]) is not string
+      - metallb_addresses | default([]) | length > 0
+    fail_msg: Set metallb_addresses to unused LAN addresses reserved outside DHCP; no default pool is guessed.
+- name: Read the selected kube-proxy mode
+  ansible.builtin.command: kubectl get configmap kube-proxy -n kube-system -o json
+  register: metallb_proxy_config
+  changed_when: false
+- name: Read the kube-proxy configuration document
+  ansible.builtin.set_fact:
+    metallb_proxy_document: '{{ (metallb_proxy_config.stdout | from_json).data["config.conf"] | from_yaml }}'
+- name: Enable strict ARP only when the selected proxy uses IPVS
+  when: metallb_proxy_document.mode | default('') == 'ipvs' and not metallb_proxy_document.ipvs.strictARP | default(false) | bool
+  block:
+    - name: Preserve unrelated kube-proxy settings while enabling strict ARP
+      ansible.builtin.command:
+        argv: [kubectl, patch, configmap, kube-proxy, -n, kube-system, --type=merge, -p, '{{ {"data": {"config.conf": metallb_proxy_document | combine({"ipvs": {"strictARP": true}}, recursive=true) | to_nice_yaml}} | to_json }}']
+      changed_when: true
+    - name: Restart kube-proxy to apply its changed configuration
+      ansible.builtin.command: kubectl rollout restart daemonset/kube-proxy -n kube-system
+      changed_when: true
+    - name: Require the updated proxies to become ready
+      ansible.builtin.command: kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=180s
+      changed_when: false
+- name: Install the pinned native LoadBalancer controller and speakers
+  ansible.builtin.include_tasks: ../download_apply.yml
+  vars:
+    addon_namespace: metallb-system
+    manifest_name: metallb-{{ tool_versions.metallb }}
+    manifest_url: https://raw.githubusercontent.com/metallb/metallb/{{ tool_versions.metallb }}/config/manifests/metallb-native.yaml
+    manifest_checksum: sha256:e5f7c268f114c446dc60aaad71b7cabf861f637743e033e354d7d48592807c6d
+    manifest_patches:
+      - kind: Deployment
+        name: controller
+        container_resources:
+          controller:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+      - kind: DaemonSet
+        name: speaker
+        container_resources:
+          speaker:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 128Mi}
+- name: Wait for the LoadBalancer webhook and speakers before creating its pool
+  ansible.builtin.command:
+    argv: [kubectl, rollout, status, '{{ item }}', -n, metallb-system, --timeout=240s]
+  loop: [deployment/controller, daemonset/speaker]
+  changed_when: false
+- name: Declare the reserved pool with explicit per-Service opt-in
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: practice
+            namespace: metallb-system
+          spec:
+            autoAssign: false
+            addresses: '{{ metallb_addresses }}'
+        - apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: practice
+            namespace: metallb-system
+          spec:
+            ipAddressPools: [practice]

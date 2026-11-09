@@ -1,0 +1,62 @@
+---
+- name: Verify the explicitly configured LAN LoadBalancer
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../setup/vars/common.yml
+  tasks:
+    - name: Choose a unique temporary LoadBalancer namespace
+      ansible.builtin.set_fact:
+        test_namespace: 'cert-loadbalancer-{{ now(utc=true, fmt="%Y%m%d%H%M%S") }}'
+        certification_completed_checks: []
+    - name: Exercise real external address allocation and HTTP traffic
+      block:
+        - name: Create the disposable LoadBalancer test namespace
+          ansible.builtin.command: kubectl create namespace {{ test_namespace }}
+          changed_when: true
+        - name: Prepare a small application and prove its internal Service works
+          ansible.builtin.include_tasks: tasks/kcna.yml
+        - name: Request an address only from the declared practice pool
+          ansible.builtin.include_tasks: ../setup/tasks/apply_manifest.yml
+          vars:
+            manifest_definition:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: web-loadbalancer
+                namespace: '{{ test_namespace }}'
+                annotations:
+                  metallb.io/address-pool: practice
+              spec:
+                type: LoadBalancer
+                selector:
+                  app: certification-web
+                ports:
+                  - port: 80
+                    targetPort: 8080
+        - name: Require a concrete address from the LoadBalancer controller
+          ansible.builtin.command: kubectl get service web-loadbalancer -n {{ test_namespace }} -o jsonpath={.status.loadBalancer.ingress[0].ip}
+          register: practice_loadbalancer_ip
+          changed_when: false
+          until: practice_loadbalancer_ip.rc == 0 and practice_loadbalancer_ip.stdout | length > 0
+          retries: 24
+          delay: 5
+        - name: Verify the advertised address is reachable from the controller
+          ansible.builtin.uri:
+            url: 'http://{{ practice_loadbalancer_ip.stdout }}/'
+            return_content: true
+            timeout: 10
+            use_proxy: false
+          delegate_to: localhost
+          become: false
+          register: practice_loadbalancer_http
+          until: practice_loadbalancer_http.status | default(0) == 200 and practice_loadbalancer_http.content | default('') | trim == 'cloud-native-lab'
+          retries: 12
+          delay: 5
+      always:
+        - name: Remove only the disposable Service and its application namespace
+          ansible.builtin.command: kubectl delete namespace {{ test_namespace }} --ignore-not-found --wait=true --timeout=120s
+          changed_when: true

@@ -21,6 +21,7 @@
       - audit
       - storage
       - traefik
+      - metallb
       - workflows
       - rollouts
       - events
