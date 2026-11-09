@@ -131,7 +131,10 @@ pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" \
 A fresh certification run deletes **all managed lab VMs and their writable disks**,
 then creates only the selected environment. To keep the other Linux guest, use
 the targeted Linux workflow in the [Linux guide](docs/linux-certifications.md).
-Normal configuration runs use `setup/certification_lab.yml` and do not recreate VMs.
+Normal configuration runs use `setup/certification_lab.yml` and require running,
+SSH-accessible guests; they do not create or start VMs. After destroying the lab,
+use the fresh workflow first. Replace `capa` with `ckad` in the Windows launch
+command to create a fresh CKAD environment.
 
 Fresh runs deliberately replace infrastructure. Existing-environment runs
 reconcile managed configuration. Their default verification creates and removes

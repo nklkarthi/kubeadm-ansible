@@ -35,13 +35,26 @@ See [compatibility](compatibility.md) before choosing a profile.
 
 ## Select the certification
 
-For a completely fresh local environment, select one profile from the repository
-root using the VM-replacement entry point:
+Activate `.venv` and run from the repository root. On WSL, create a completely
+fresh local environment through the Windows launcher so Hyper-V management has
+administrator privileges:
 
 ```bash
-ansible-playbook -i setup/inventory setup/fresh_certification.yml \
-  -e @profiles/certifications/ckad.yml
+pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" \
+  -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" \
+  -LabRepository "$PWD" -Certifications ckad
 ```
+
+Accept the Windows administrator consent prompt when it appears. On macOS, or
+from WSL launched with Windows administrator privileges, use Ansible directly:
+
+```bash
+ansible-playbook -i setup/inventory setup/fresh_certification.yml -e @profiles/certifications/ckad.yml
+```
+
+When splitting a Bash or Zsh command across lines, `\` must be the last character
+on its line, immediately before the newline. Use the single-line form above to
+avoid copying spaces after it.
 
 This deletes the previous managed certification VMs and their writable disks,
 creates clean guests from the cached OS image, verifies their new VM identities
@@ -49,22 +62,15 @@ and CPU stability, and then installs the selected environment. Only one
 certification's VMs remain. Controller tools and immutable download caches are
 shared; installed guest packages, workloads and practice data are recreated.
 
-On Windows, use an administrator session through the Hyper-V helper:
-
-```powershell
-& '\\wsl.localhost\Ubuntu\home\nklkarthi\github.com\nklkarthi\kubeadm-ansible\scripts\hyperv_setup.ps1' `
-  -StartLab -WslDistribution Ubuntu -LinuxUser nklkarthi `
-  -LabRepository /home/nklkarthi/github.com/nklkarthi/kubeadm-ansible `
-  -Certifications ckad
-```
-
 Use a comma-separated list such as `-Certifications ckad,kca,cba` to test several
 environments sequentially. Each entry replaces the preceding environment; the
 batch stops at its first failure. The helper selects the dedicated CCA, LFCS or
 LFCA inventory automatically. CKA HA is opt-in.
 
 To reconcile an existing environment without replacing its VMs, the guest setup
-entry point remains available. For Pluralsight, allocate a new provider lab and
+entry point remains available. Its guests must already be running and reachable
+over SSH; it does not create or start VMs. After lab cleanup, run the fresh
+workflow above first. For Pluralsight, allocate a new provider lab and
 use this entry point with its inventory. The profile builds the base, installs
 its selected components in dependency order, and runs its functional checks:
 
