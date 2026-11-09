@@ -120,21 +120,35 @@ with `inventories/ha.ini`. LFCS and LFCA require their dedicated Linux inventori
 
 For a fresh local certification environment on macOS, use
 `setup/fresh_certification.yml` with the same inventory and profile. On WSL,
-the Windows launch command below provides the VM-management privileges:
+create a fresh CKAD lab as follows:
+
+1. Open a WSL terminal in this repository and run `source .venv/bin/activate`.
+2. Run the command below. It opens the Windows administrator consent prompt
+   required for Hyper-V VM creation and deletion.
+3. Select **Yes**. Leave the elevated Windows terminal open while it runs
+   Ansible back in WSL to create the guests, install the selected certification
+   and run its functional checks.
+4. After a successful run, use `kubectl get nodes` from WSL. The launcher also
+   prepares your kubeconfig. For later configuration changes, use
+   `setup/certification_lab.yml` with the same profile.
 
 ```bash
-pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" \
-  -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" \
-  -LabRepository "$PWD" -Certifications capa
+pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" -LabRepository "$PWD" -Certifications ckad
 ```
+
+Replace `ckad` with another profile name to select that certification. The
+launcher selects its inventory and runs `setup/fresh_certification.yml`;
+there is no separate VM-creation command to run. If Windows reports that the
+operation was canceled, provisioning has not begun: run the command again and
+accept the administrator prompt. The Windows run log is
+`%LOCALAPPDATA%\Temp\kubeadm-hyperv\ckad-fresh.log` for CKAD.
 
 A fresh certification run deletes **all managed lab VMs and their writable disks**,
 then creates only the selected environment. To keep the other Linux guest, use
 the targeted Linux workflow in the [Linux guide](docs/linux-certifications.md).
 Normal configuration runs use `setup/certification_lab.yml` and require running,
 SSH-accessible guests; they do not create or start VMs. After destroying the lab,
-use the fresh workflow first. Replace `capa` with `ckad` in the Windows launch
-command to create a fresh CKAD environment.
+use the fresh workflow first.
 
 Fresh runs deliberately replace infrastructure. Existing-environment runs
 reconcile managed configuration. Their default verification creates and removes

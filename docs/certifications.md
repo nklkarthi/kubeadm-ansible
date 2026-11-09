@@ -35,18 +35,27 @@ See [compatibility](compatibility.md) before choosing a profile.
 
 ## Select the certification
 
-Activate `.venv` and run from the repository root. On WSL, create a completely
-fresh local environment through the Windows launcher so Hyper-V management has
-administrator privileges:
+On WSL, create a completely fresh CKAD lab in this order:
+
+1. Open a WSL terminal in this repository and run `source .venv/bin/activate`.
+2. Run the command below. It opens a Windows administrator consent prompt.
+3. Select **Yes** in that prompt. The elevated Windows terminal runs Ansible
+   back in WSL; leave it open until provisioning and verification finish.
+4. Check that the run succeeds, then use `kubectl get nodes` from WSL. The
+   launcher prepares the controller kubeconfig automatically.
 
 ```bash
-pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" \
-  -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" \
-  -LabRepository "$PWD" -Certifications ckad
+pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" -LabRepository "$PWD" -Certifications ckad
 ```
 
-Accept the Windows administrator consent prompt when it appears. On macOS, or
-from WSL launched with Windows administrator privileges, use Ansible directly:
+The launcher selects the inventory and profile and runs
+`setup/fresh_certification.yml`; there is no separate VM-creation command to run.
+If Windows cancels the consent prompt, provisioning does not begin. Run the
+command again and accept the prompt. Windows saves the run log at
+`%LOCALAPPDATA%\Temp\kubeadm-hyperv\ckad-fresh.log`.
+
+On macOS, or from WSL launched with Windows administrator privileges, activate
+`.venv` in the repository directory and use Ansible directly:
 
 ```bash
 ansible-playbook -i setup/inventory setup/fresh_certification.yml -e @profiles/certifications/ckad.yml
