@@ -45,6 +45,12 @@
         argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands[vagrant_state] + (existing_vagrant_nodes if vagrant_state == "started" else vagrant_nodes) }}'
       changed_when: vagrant_state != 'status'
       when: vagrant_state != 'started' or existing_vagrant_nodes | length > 0
+    - name: Remove SSH access markers for deleted guests
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/vagrant/access/{{ item }}-{{ vagrant_provider }}.id'
+        state: absent
+      loop: '{{ vagrant_nodes }}'
+      when: vagrant_state == 'absent'
     - name: Create new guests one at a time and verify their persistent network on reboot
       ansible.builtin.include_tasks: ../tasks/vagrant_new_node.yml
       loop: '{{ new_vagrant_nodes | default([]) }}'

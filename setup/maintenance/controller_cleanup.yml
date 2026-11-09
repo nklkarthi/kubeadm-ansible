@@ -1,0 +1,39 @@
+---
+- name: Remove regenerable controller downloads without uninstalling tools
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  environment:
+    HOMEBREW_NO_AUTO_UPDATE: '1'
+  tasks:
+    - name: Locate Homebrew's download cache
+      ansible.builtin.command: brew --cache
+      register: controller_brew_cache
+      changed_when: false
+    - name: Select completed cache files while preserving active partial downloads
+      ansible.builtin.find:
+        paths: '{{ controller_brew_cache.stdout }}/downloads'
+        file_type: file
+        excludes: ['*.incomplete', '*.partial']
+        age: 1m
+      register: controller_completed_downloads
+    - name: Remove only completed package downloads
+      ansible.builtin.file:
+        path: '{{ item.path }}'
+        state: absent
+      loop: '{{ controller_completed_downloads.files }}'
+      loop_control:
+        label: '{{ item.path | basename }}'
+    - name: Purge downloaded Python packages without changing the virtual environment
+      ansible.builtin.command:
+        argv: ['{{ ansible_playbook_python }}', -m, pip, cache, purge]
+      register: controller_pip_cache
+      changed_when: "'Files removed:' in controller_pip_cache.stdout and 'Files removed: 0' not in controller_pip_cache.stdout"
+    - name: Report controller filesystem space
+      ansible.builtin.command: df -h /
+      register: controller_free_space
+      changed_when: false
+    - name: Show available controller filesystem space
+      ansible.builtin.debug:
+        var: controller_free_space.stdout_lines
