@@ -51,8 +51,15 @@
         state: present
     - name: Install advanced administration tools only for LFCS
       ansible.builtin.dnf:
-        name: [autofs, iscsi-initiator-utils, libvirt-client, libvirt-daemon-driver-qemu, nfs-utils, sssd-ldap]
+        name: [autofs, iscsi-initiator-utils, libvirt, nfs-utils, qemu-kvm, sssd-ldap, virt-install]
         state: present
+      when: certification == 'lfcs'
+    - name: Enable local libvirt socket activation for LFCS virtualization exercises
+      ansible.builtin.systemd_service:
+        name: '{{ item }}'
+        enabled: true
+        state: started
+      loop: [virtqemud.socket, virtnetworkd.socket, virtnodedevd.socket, virtnwfilterd.socket, virtsecretd.socket, virtstoraged.socket, virtinterfaced.socket]
       when: certification == 'lfcs'
     - name: Refresh Linux facts after installing the SELinux Python bindings
       ansible.builtin.setup:

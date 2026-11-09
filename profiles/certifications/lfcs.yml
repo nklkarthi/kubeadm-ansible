@@ -3,5 +3,9 @@ certification: lfcs
 linux_http_port: 18080
 linux_lab_root: /var/lib/kubeadm-certifications/lfcs
 manual_study_topics:
+  - Configure interfaces, routes, DNS, firewall rules, NFS, iSCSI and automounts
+  - Manage accounts, sudo, PAM, resource limits and directory authentication
+  - Schedule jobs and troubleshoot services, boot targets, kernel settings and package repositories
+  - Manage container storage and networking, virtual machine lifecycle and backup recovery
   - Time-limited troubleshooting and recovery drills
   - Capacity planning and Linux command fluency

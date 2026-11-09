@@ -12,7 +12,7 @@
           - ansible_facts.processor_vcpus | int >= 2
     - name: Verify the practice HTTP service from the controller
       ansible.builtin.uri:
-        url: 'http://{{ ansible_host | default(inventory_hostname) }}:{{ linux_http_port }}/'
+        url: 'http://{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}:{{ linux_http_port }}/'
         return_content: true
       delegate_to: localhost
       become: false
@@ -114,15 +114,27 @@
       args:
         executable: /bin/bash
       changed_when: true
-    - name: Verify the time service and container and virtualization tools
-      ansible.builtin.command:
-        argv: '{{ item }}'
-      loop:
-        - [chronyc, tracking]
-        - [podman, info, --format, '{{ "{{.Host.Security.selinuxEnabled}}" }}']
+    - name: Verify the running time service
+      ansible.builtin.command: chronyc tracking
       changed_when: false
-    - name: Verify the LFCS virtualization CLI
-      ansible.builtin.command: virsh --version
+    - name: Read the container engine's stable JSON information
+      ansible.builtin.command: podman info --format json
+      register: linux_container_info
+      changed_when: false
+    - name: Require container isolation to retain SELinux enforcement
+      ansible.builtin.assert:
+        that: (linux_container_info.stdout | from_json).host.security.selinuxEnabled | bool
+    - name: Run a disposable resource-limited Linux container
+      ansible.builtin.command:
+        argv: [podman, run, --rm, --read-only, --memory=64m, --cpus=0.25, docker.io/library/busybox:1.37.0, echo, linux-container-ready]
+      register: linux_container
+      changed_when: true
+      until: linux_container.rc == 0 and linux_container.stdout | trim == 'linux-container-ready'
+      retries: 3
+      delay: 5
+      timeout: 120
+    - name: Verify a real LFCS libvirt system connection
+      ansible.builtin.command: virsh --connect qemu:///system list --all
       changed_when: false
       when: certification == 'lfcs'
     - name: Create the controller verification directory
@@ -139,7 +151,7 @@
         content: '{{ {"certification": certification, "status": "passed", "verified_at_utc": now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
           "distribution": ansible_facts.distribution, "release": ansible_facts.distribution_version,
           "vm_identities": hostvars.localhost.fresh_vm_identities | default({}), "scope": "automated Linux environment checks", "checks": ["SELinux enforcement denial and recovery", "controller-to-guest HTTP and firewall",
-          "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools"],
+          "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools", "a resource-limited read-only container executes successfully"] + (["the libvirt system connection accepts commands"] if certification == "lfcs" else []),
           "manual_study_topics": manual_study_topics | default([])} | to_nice_json }}'
       delegate_to: localhost
       become: false
