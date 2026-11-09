@@ -1,0 +1,5 @@
+---
+- name: Destroy all managed lab VMs, writable disks and regenerable lab caches
+  import_playbook: linux_cleanup.yml
+  vars:
+    cleanup_vagrant_nodes: '{{ vagrant_managed_nodes }}'

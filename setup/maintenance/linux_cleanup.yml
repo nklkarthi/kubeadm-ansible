@@ -1,9 +1,9 @@
 ---
-- name: Stop and destroy both Linux practice VMs and their writable disks
+- name: Stop and destroy the selected practice VMs and their writable disks
   import_playbook: ../hosts/vagrant.yml
   vars:
     vagrant_state: absent
-    vagrant_nodes: [lfcs, lfca]
+    vagrant_nodes: '{{ cleanup_vagrant_nodes | default(["lfcs", "lfca"]) }}'
 - name: Remove regenerable lab caches while retaining keys and verification reports
   hosts: localhost
   connection: local
@@ -13,6 +13,12 @@
   vars:
     cleanup_provider: '{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}'
   tasks:
+    - name: Remove obsolete service access details when every managed guest is deleted
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/access/{{ item }}'
+        state: absent
+      loop: [current.yml, credentials.yml, argocd-server.crt]
+      when: vagrant_managed_nodes | difference(cleanup_vagrant_nodes | default(['lfcs', 'lfca'])) | length == 0
     - name: Remove downloaded and imported lab cache files
       ansible.builtin.file:
         path: '{{ repository_root }}/artifacts/{{ item }}'
