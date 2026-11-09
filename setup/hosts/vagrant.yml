@@ -17,6 +17,7 @@
       status: [status]
   environment:
     VAGRANT_LAB_PROVIDER: '{{ vagrant_provider }}'
+    VAGRANT_LAB_MASTER_MEMORY_MB: '{{ vagrant_master_memory_mb | default(4096) | string }}'
   tasks:
     - name: Require an explicit selection from this lab's Vagrant machines
       ansible.builtin.assert:
@@ -134,6 +135,7 @@
               - ansible_facts.distribution_version is version(vagrant_guest_release | default('24.04'), '==')
               - ansible_facts.processor_vcpus | int >= 2
               - ansible_facts.memtotal_mb | int >= vagrant_guest_min_memory_mb | default(1900) | int
+              - vagrant_name != 'master' or ansible_facts.memtotal_mb | int >= (vagrant_master_memory_mb | default(4096) | int * 0.9) | int
               - node_ip in ansible_facts.all_ipv4_addresses
 
   gather_facts: false

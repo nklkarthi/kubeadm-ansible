@@ -10,7 +10,7 @@ state_directory = ENV.fetch("VAGRANT_DOTFILE_PATH", File.join(__dir__, ".vagrant
 access_directory = ENV.fetch("VAGRANT_LAB_ACCESS_DIR", File.join(__dir__, "artifacts/vagrant/access"))
 
 nodes = {
-  "master" => { ip: "192.168.101.32", memory: 4096, primary: true },
+  "master" => { ip: "192.168.101.32", memory: Integer(ENV.fetch("VAGRANT_LAB_MASTER_MEMORY_MB", "4096")), primary: true },
   "worker-01" => { ip: "192.168.101.34", memory: 4096, primary: true },
   "worker-02" => { ip: "192.168.101.35", memory: 4096, primary: true },
   "ha-01" => { ip: "192.168.101.37", memory: 2048 },

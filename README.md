@@ -22,6 +22,10 @@ is 2 GB RAM per machine and 2 CPUs for each control plane. The home defaults
 provide additional room for certification workloads; 4 GB is not a kubeadm
 requirement. Workers keep 2 CPUs as a lab choice. Review workload requests,
 available memory, memory pressure and eviction events before reducing VM RAM.
+CNPE selects a 6 GB control plane for its larger collection of Kubernetes APIs;
+its workers retain the 4 GB default.
+Pass `-e @profiles/certifications/cnpe.yml` when starting these VMs through
+`setup/hosts/vagrant.yml` outside the certification entry point.
 The dedicated LFCS and LFCA guests use 2 CPUs and 2 GB each without Kubernetes.
 
 Install the controller tools in a virtual environment:
