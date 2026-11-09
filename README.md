@@ -55,6 +55,7 @@ between disposable labs and verified against the release pins. See the
 ## Repository layout
 
 - `setup/kube_cluster.yml`: base-cluster entry point.
+- `setup/fresh_cluster.yml`: replace local VMs and verify the minimal base cluster.
 - `setup/fresh_certification.yml`: replace local VMs, then install and test one certification.
 - `Vagrantfile`, `setup/hosts/vagrant.yml`: local VM definitions and lifecycle.
 - `setup/cluster/`: bootstrap, CNI, credentials, and cluster verification.
@@ -93,6 +94,20 @@ The VM must be running before SSH can connect. Windows home VMs appear in
 **Hyper-V Manager** with names beginning `kubeadm-`; macOS VirtualBox-provider
 VMs appear in **VirtualBox Manager**. Vagrant uses the same guest account and key
 for managed SSH access.
+
+On Windows, WSL 2 runs Ansible, Vagrant and the certification clients. Vagrant
+uses Windows interoperability and PowerShell to manage Hyper-V. The Ubuntu VMs
+run on the Windows host alongside WSL 2. Ansible configures them over SSH;
+controller-side Kubernetes clients contact the master API. In Ansible output,
+`localhost` therefore means the WSL controller, and `master -> localhost`
+indicates a task delegated from a guest's play to that controller.
+
+```mermaid
+flowchart LR
+  W[WSL 2 controller] -->|Vagrant via PowerShell| H[Windows Hyper-V]
+  H -->|VM lifecycle| V[Ubuntu master and workers]
+  W -->|SSH and Kubernetes API| V
+```
 
 ```bash
 ansible-playbook setup/hosts/vagrant.yml

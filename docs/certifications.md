@@ -122,7 +122,7 @@ API proxy, and destroys only the two extra control planes and their disks.
 Run the helper with `-LabPlaybook setup/hosts/vagrant.yml` to restore the three
 main VMs, then select the next certification profile with `rebuild_lab=true`.
 
-### LFCS Linux guest
+### LFCS and LFCA Linux guests
 
 Use `inventories/lfcs.ini` with `setup/hosts/linux_vms.yml` to create the optional
 2 CPU, 2 GB guest. On Windows, pass that inventory and playbook to the same
@@ -132,13 +132,39 @@ the Linux-only guest is selected. Once the guest is running:
 ```bash
 ansible-playbook -i inventories/lfcs.ini setup/certification_lab.yml \
   -e @profiles/certifications/lfcs.yml
-ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.40
 ```
 
 SELinux stays enforcing. Practice services and storage use the dedicated Linux
 guest so that Linux administration exercises cannot change the Kubernetes hosts.
 The storage checks create a small sparse loop device, verify LVM growth and
 filesystem persistence, and remove that device afterwards.
+
+Run one of these commands from the repository directory in WSL or macOS:
+
+```bash
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.40  # LFCS
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.41  # LFCA
+```
+
+After connecting, run `sudo -i` inside the guest for administration exercises.
+Each VM must be running. Use `inventories/lfca.ini` and the LFCA profile for the
+LFCA guest. `setup/hosts/linux_vms.yml` starts the selected Linux guest and stops
+the main Kubernetes VMs; it preserves other Linux guests.
+`setup/fresh_certification.yml` instead deletes all managed VMs before creating
+the selected certification environment.
+
+The [LFCS syllabus](https://training.linuxfoundation.org/certification/linux-foundation-certified-sysadmin-lfcs/)
+is distribution-independent and explicitly includes SELinux. These Linux profiles
+use AlmaLinux's official Hyper-V image for the RHEL-family exercises. Rocky Linux
+uses the same families of administration tools; a separate Ubuntu Server lab is
+useful for Debian-family differences. These profiles currently configure AlmaLinux.
+
+| Area | AlmaLinux / Rocky Linux | Ubuntu Server |
+| --- | --- | --- |
+| Packages | `dnf`, `rpm` | `apt`, `dpkg` |
+| Apache service | `httpd` | `apache2` |
+| Network configuration | NetworkManager / `nmcli` | Netplan with the configured network backend |
+| Default mandatory access control | SELinux | AppArmor; this does not replace SELinux practice |
 
 ## Recipes
 
@@ -300,6 +326,12 @@ Keep the base cluster and one exercise stack active at a time. Measure VM RAM
 and storage before adding observability or platform components. Use separate
 labs when exercises require incompatible Kubernetes versions or CNIs.
 
+To replace the current local certification environment with a clean minimal
+Kubernetes cluster, run `setup/fresh_cluster.yml` with the home inventory. On
+Windows, pass `-LabPlaybook setup/fresh_cluster.yml` to the administrator
+Hyper-V helper. This removes the selected certification's VMs and writable
+disks, recreates the three main guests, and verifies the functional base.
+
 ```bash
 ansible-playbook setup/cluster/verify_cluster.yml
 ansible-playbook setup/maintenance/space_cleanup.yml
@@ -317,26 +349,22 @@ provide the respective exam prerequisites and environment details.
 
 ## Recent GitHub study guides
 
-These repositories have README commits between **9 November 2025 and
-9 November 2026**. Dates link to the corresponding commits, so recency can be
-checked independently of search-engine crawl dates.
+These repositories were created between **9 November 2025 and 9 November 2026**,
+according to GitHub repository metadata. README revisions identify the material
+reviewed; creation dates can be checked with `gh api repos/OWNER/REPO --jq .created_at`.
 
-| Guide | Coverage | README update |
-| --- | --- | --- |
-| [Awesome Kubestronaut](https://github.com/yetmike/awesome-kubestronaut) | Resources grouped by all 16 certifications, with links to project documentation and labs | [13 October 2026](https://github.com/yetmike/awesome-kubestronaut/commit/2c28c738530e0d23057fd272f1c9c51deeb9d5b9) |
-| [Golden Kubestronaut study guide](https://github.com/slauger/kubestronaut) | Study guides covering all 16 certifications | [7 April 2026](https://github.com/slauger/kubestronaut/commit/846b1cb39159f7fbb45f6197f7e5287a31258b40) |
-| [Golden Kubestronaut learning path](https://github.com/pmady/golden-kubestronaut-learning) | Certification chapters and study sequence | [4 January 2026](https://github.com/pmady/golden-kubestronaut-learning/commit/c0cdcca28b82bd6b7da2824479f4eb7a3d0583af) |
-| [CKA preparation guide](https://github.com/techiescamp/cka-certification-guide) | Administration, networking, storage, workloads, and troubleshooting exercises | [5 November 2026](https://github.com/techiescamp/cka-certification-guide/commit/3d2cbc90389e5dbd82ae0755bc9068ca16ae5cb5) |
-| [CKS preparation guide](https://github.com/techiescamp/cks-certification-guide) | Cluster and host hardening, runtime detection, policy and supply-chain exercises | [6 November 2026](https://github.com/techiescamp/cks-certification-guide/commit/f698b7fc215fa81a9b7d0ea35c14b4008b694a49) |
-| [CNPE practice platform](https://github.com/rbstp/cnpe-exam-prep) | Platform architecture, delivery, self-service APIs, observability and security, with per-layer exercises | [17 September 2026](https://github.com/rbstp/cnpe-exam-prep/commit/a1fcb7e6cb1f78f08bf30cbecddbe24ab851d3a4) |
-| [CGOA study guide](https://github.com/otkd/CGOA-Study-Guide) | GitOps principles and reference material | [18 September 2026](https://github.com/otkd/CGOA-Study-Guide/commit/34a62fdea7c5bc8827c47e9783265ff42384098b) |
-| [CAPA study guide](https://github.com/msahihi/CAPA-study-guide) | Argo CD, Workflows, Rollouts and Events domains and labs | [13 February 2026](https://github.com/msahihi/CAPA-study-guide/commit/f509a371f6fae23e769915c9e123e3b4b1fd18b3) |
-| [KCNA study guide](https://github.com/msahihi/KCNA-study-guide) | Kubernetes and cloud native fundamentals | [25 January 2026](https://github.com/msahihi/KCNA-study-guide/commit/8239cd9973c6c479f9833f4798cb7802e6f3aded) |
-| [KCSA study guide](https://github.com/msahihi/KCSA-study-guide) | Security concepts and Kubernetes security domains | [13 March 2026](https://github.com/msahihi/KCSA-study-guide/commit/a0ef100adddd583b5dd9f7d3fe3ba828da6f7488) |
-| [CKS crash course](https://github.com/bmuschko/cks-crash-course) | Security exercises and solutions | [17 November 2025](https://github.com/bmuschko/cks-crash-course/commit/8114283c5b5b83e8e73ac9867ab4c71cdd147e9f) |
+| Guide | Coverage | Repository created | README revision |
+| --- | --- | --- | --- |
+| [Golden Kubestronaut study guide](https://github.com/slauger/kubestronaut) | Study guides covering all 16 certifications | 31 March 2026 | [7 April 2026](https://github.com/slauger/kubestronaut/commit/846b1cb39159f7fbb45f6197f7e5287a31258b40) |
+| [Golden Kubestronaut learning path](https://github.com/pmady/golden-kubestronaut-learning) | Certification chapters and study sequence | 18 December 2025 | [4 January 2026](https://github.com/pmady/golden-kubestronaut-learning/commit/c0cdcca28b82bd6b7da2824479f4eb7a3d0583af) |
+| [CNPE practice platform](https://github.com/rbstp/cnpe-exam-prep) | Platform APIs, delivery, operations, observability and security exercises | 22 August 2026 | [17 September 2026](https://github.com/rbstp/cnpe-exam-prep/commit/a1fcb7e6cb1f78f08bf30cbecddbe24ab851d3a4) |
+| [CAPA study guide](https://github.com/msahihi/CAPA-study-guide) | Argo CD, Workflows, Rollouts and Events domains and labs | 26 January 2026 | [13 February 2026](https://github.com/msahihi/CAPA-study-guide/commit/f509a371f6fae23e769915c9e123e3b4b1fd18b3) |
+| [KCNA study guide](https://github.com/msahihi/KCNA-study-guide) | Kubernetes and cloud native fundamentals | 25 January 2026 | [25 January 2026](https://github.com/msahihi/KCNA-study-guide/commit/8239cd9973c6c479f9833f4798cb7802e6f3aded) |
+| [KCSA study guide](https://github.com/msahihi/KCSA-study-guide) | Security concepts and Kubernetes security domains | 13 March 2026 | [13 March 2026](https://github.com/msahihi/KCSA-study-guide/commit/a0ef100adddd583b5dd9f7d3fe3ba828da6f7488) |
+| [LFCS multi-distribution practice lab](https://github.com/Zeukkari/lfcs-test-lab) | Domain notes and Ubuntu/Rocky/SUSE exercises, including multi-node practice | 3 November 2026 | [3 November 2026](https://github.com/Zeukkari/lfcs-test-lab/commit/20ad32e997043b1d81484e85e288c6720bd34e15) |
 
-Use these for practice alongside the official curricula. A recent README update
-does not establish compatibility with the Kubernetes version in this lab.
+Use these for practice alongside the official curricula. A recent creation date
+does not establish curriculum accuracy or compatibility with this lab's versions.
 Select the playbooks from the certification table above and the tool versions
 from the compatibility table; do not run a guide's entire installation script
 on an existing cluster.
