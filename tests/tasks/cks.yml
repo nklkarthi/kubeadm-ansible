@@ -1,4 +1,6 @@
 ---
+- name: Verify local supply-chain analysis and signature boundaries
+  ansible.builtin.include_tasks: supply_chain.yml
 - name: Deploy isolated runtime and kernel confinement probes
   ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
   vars:

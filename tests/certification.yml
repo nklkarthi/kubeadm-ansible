@@ -24,6 +24,7 @@
     - name: Choose an isolated test namespace
       ansible.builtin.set_fact:
         test_namespace: cert-{{ certification }}-{{ now(utc=true, fmt="%Y%m%d%H%M%S") }}
+        certification_completed_checks: []
     - name: Execute the selected certification checks
       block:
         - name: Create the test namespace
@@ -32,6 +33,9 @@
           changed_when: true
         - name: Execute the certification-specific checks
           ansible.builtin.include_tasks: tasks/{{ certification }}.yml
+        - name: Verify node metrics when selected by the certification profile
+          ansible.builtin.include_tasks: tasks/metrics.yml
+          when: "'metrics' in certification_addons | default([])"
         - name: Require nodes to remain free of memory pressure after the exercises
           ansible.builtin.command: kubectl wait nodes --all --for=condition=MemoryPressure=false --timeout=60s
           changed_when: false

@@ -36,6 +36,12 @@
         name: '{{ lfcs_syllabus_packages }}'
         state: present
       when: certification == 'lfcs'
+    - name: Prepare the Ubuntu learning guest as a remote-storage and LDAP client when selected
+      ansible.builtin.apt:
+        name: '{{ linux_ubuntu_remote_client_packages }}'
+        state: present
+        install_recommends: false
+      when: ansible_facts.os_family == 'Debian' and linux_remote_client | default(false) | bool
     - name: Enable local libvirt socket activation for LFCS virtualization exercises
       ansible.builtin.systemd_service:
         name: '{{ item }}'

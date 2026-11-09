@@ -1,0 +1,17 @@
+---
+- name: Select an isolated namespace for access and workload boundaries
+  ansible.builtin.set_fact:
+    boundary_namespace: '{{ test_namespace }}-boundaries'
+- name: Verify shared Kubernetes access and resource boundaries
+  block:
+    - name: Create the temporary boundary-check namespace
+      ansible.builtin.command: kubectl create namespace {{ boundary_namespace }}
+      changed_when: true
+    - name: Exercise RBAC, admission, network isolation and resource quotas
+      ansible.builtin.include_tasks: kcsa.yml
+      vars:
+        test_namespace: '{{ boundary_namespace }}'
+  always:
+    - name: Remove only the temporary boundary-check namespace
+      ansible.builtin.command: kubectl delete namespace {{ boundary_namespace }} --ignore-not-found --wait=true --timeout=120s
+      changed_when: true

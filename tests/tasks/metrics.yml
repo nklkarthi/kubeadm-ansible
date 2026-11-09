@@ -1,0 +1,11 @@
+---
+- name: Read usable node metrics through the aggregated Kubernetes API
+  ansible.builtin.command: kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
+  register: practice_node_metrics
+  changed_when: false
+  until: practice_node_metrics.rc == 0 and (practice_node_metrics.stdout | from_json)['items'] | length == groups[cluster_hosts] | length
+  retries: 12
+  delay: 5
+- name: Record actual metrics availability for observation and autoscaling exercises
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["the aggregated metrics API returns resource usage for every node using trusted kubelet TLS"] }}'

@@ -1,0 +1,30 @@
+---
+- name: Prepare tools used by the hands-on Kubernetes guides
+  hosts: '{{ cluster_hosts }}'
+  become: true
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Require a supported practical profile and Ubuntu guests
+      ansible.builtin.assert:
+        that:
+          - certification | default('') in ['cka', 'ckad', 'cks', 'cnpe']
+          - ansible_facts.distribution == 'Ubuntu'
+          - not practice_image_builder | default(false) | bool or groups[worker_hosts] | default([]) | length > 0
+    - name: Install node diagnosis and configuration tools
+      ansible.builtin.apt:
+        name: [bash-completion, curl, dnsutils, git, iproute2, iputils-ping, jq, lsof, netcat-openbsd, openssl, procps, socat, strace, tar, tcpdump, vim]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        install_recommends: false
+    - name: Install the image builder on one worker only
+      ansible.builtin.apt:
+        name: buildah
+        state: present
+        install_recommends: false
+      when: practice_image_builder | default(false) | bool and inventory_hostname == groups[worker_hosts][0]
+    - name: Verify the declared image-building client
+      ansible.builtin.command: buildah version
+      changed_when: false
+      when: practice_image_builder | default(false) | bool and inventory_hostname == groups[worker_hosts][0]

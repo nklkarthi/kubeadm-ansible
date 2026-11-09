@@ -36,6 +36,7 @@ linux_platforms:
     http_validate: [apache2ctl, -t]
     container_mac: apparmorEnabled
 linux_platform: '{{ linux_platforms[ansible_facts.os_family] }}'
+linux_ubuntu_remote_client_packages: [cifs-utils, open-iscsi, nfs-common, smbclient, ldap-utils]
 lfcs_syllabus_packages:
   - 389-ds-base
   - attr

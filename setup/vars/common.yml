@@ -23,6 +23,10 @@ tool_versions:
   kubectl: v1.37.2
   argo_rollouts_cli: v1.10.0
   crossplane_cli: v2.5.0
+  syft: v1.57.0
+  cosign: v3.1.4
+  trivy: v0.76.2
+  kube_linter: v0.8.3
   kustomize: v5.8.3
   node: v24.22.2
   corepack: '0.36.0'

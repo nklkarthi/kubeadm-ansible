@@ -55,6 +55,7 @@ Vagrant.configure("2") do |config|
         provider.gui = false
         provider.linked_clone = true
         provider.customize ["modifyvm", :id, "--rtcuseutc", "on", "--vram", "16", "--audio-enabled", "off"]
+        provider.customize ["modifyvm", :id, "--nested-hw-virt", "on"] if name == "lfcs" && RUBY_PLATFORM.include?("x86_64")
       end
       node.vm.provider "hyperv" do |provider, override|
         override.vm.box = settings.fetch(:box, "gusztavvargadr/ubuntu-server-2404-lts")

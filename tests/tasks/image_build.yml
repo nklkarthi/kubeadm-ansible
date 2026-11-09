@@ -1,0 +1,135 @@
+---
+- name: Build, distribute and execute an image in the selected certification lab
+  vars:
+    practice_builder: '{{ groups[worker_hosts][0] }}'
+    practice_image: 'docker.io/library/certification-practice:{{ test_namespace }}'
+    practice_archive: '/var/tmp/{{ test_namespace }}-image.tar'
+    practice_local_archive: '{{ repository_root }}/artifacts/images/{{ test_namespace }}-image.tar'
+  block:
+    - name: Allocate a private image-build workspace on the selected worker
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: certification-image-
+      delegate_to: '{{ practice_builder }}'
+      register: practice_build_workspace
+    - name: Keep the build context separate from the builder's image storage
+      ansible.builtin.file:
+        path: '{{ practice_build_workspace.path }}/context'
+        state: directory
+        mode: '0700'
+      delegate_to: '{{ practice_builder }}'
+    - name: Declare the Dockerfile used to verify image building
+      ansible.builtin.copy:
+        dest: '{{ practice_build_workspace.path }}/context/Dockerfile'
+        mode: '0600'
+        content: |
+          FROM docker.io/library/busybox:1.37.0
+          COPY message /practice-message
+          USER 65534:65534
+          CMD ["sh", "-c", "cat /practice-message; sleep 3600"]
+      delegate_to: '{{ practice_builder }}'
+    - name: Supply uniquely identifiable application content
+      ansible.builtin.copy:
+        dest: '{{ practice_build_workspace.path }}/context/message'
+        content: "{{ test_namespace }}-built-by-buildah\n"
+        mode: '0644'
+      delegate_to: '{{ practice_builder }}'
+    - name: Build without sharing storage with containerd or another exercise
+      ansible.builtin.command:
+        argv: [buildah, --root, '{{ practice_build_workspace.path }}/storage', --runroot, '{{ practice_build_workspace.path }}/run', --storage-driver, vfs, bud, --isolation, chroot, --network, host, --tag, '{{ practice_image }}', '{{ practice_build_workspace.path }}/context']
+      delegate_to: '{{ practice_builder }}'
+      changed_when: true
+      timeout: 300
+    - name: Export the built image for the cluster's container runtime
+      ansible.builtin.command:
+        argv: [buildah, --root, '{{ practice_build_workspace.path }}/storage', --runroot, '{{ practice_build_workspace.path }}/run', --storage-driver, vfs, push, '{{ practice_image }}', 'docker-archive:{{ practice_archive }}:{{ practice_image }}']
+      delegate_to: '{{ practice_builder }}'
+      changed_when: true
+    - name: Retrieve the disposable archive to the controller
+      ansible.builtin.fetch:
+        src: '{{ practice_archive }}'
+        dest: '{{ practice_local_archive }}'
+        flat: true
+      delegate_to: '{{ practice_builder }}'
+    - name: Transfer the image to every schedulable node
+      ansible.builtin.copy:
+        src: '{{ practice_local_archive }}'
+        dest: '{{ practice_archive }}'
+        mode: '0600'
+      loop: '{{ groups[cluster_hosts] }}'
+      delegate_to: '{{ item }}'
+    - name: Import the exact image name into each node's Kubernetes namespace
+      ansible.builtin.command:
+        argv: [ctr, --namespace, k8s.io, images, import, '{{ practice_archive }}']
+      loop: '{{ groups[cluster_hosts] }}'
+      delegate_to: '{{ item }}'
+      register: practice_image_imports
+      changed_when: true
+    - name: Run the locally built image without a registry pull
+      ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+      vars:
+        manifest_definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: built-image
+            namespace: '{{ test_namespace }}'
+          spec:
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile: {type: RuntimeDefault}
+            containers:
+              - name: application
+                image: '{{ practice_image }}'
+                imagePullPolicy: Never
+                resources:
+                  requests: {cpu: 5m, memory: 4Mi}
+                  limits: {cpu: 100m, memory: 16Mi}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities: {drop: [ALL]}
+    - name: Require the built image's application to become ready
+      ansible.builtin.command: kubectl wait pod/built-image -n {{ test_namespace }} --for=condition=Ready --timeout=120s
+      changed_when: false
+    - name: Require the unique build content in the running application
+      ansible.builtin.command: kubectl logs built-image -n {{ test_namespace }}
+      register: practice_built_output
+      changed_when: false
+      failed_when: practice_built_output.rc != 0 or practice_built_output.stdout | trim != test_namespace ~ '-built-by-buildah'
+      until: practice_built_output.rc == 0 and practice_built_output.stdout | trim == test_namespace ~ '-built-by-buildah'
+      retries: 12
+      delay: 2
+  always:
+    - name: Remove the image consumer before deleting its image
+      ansible.builtin.command: kubectl delete pod built-image -n {{ test_namespace }} --ignore-not-found --wait=true --timeout=120s
+      changed_when: true
+    - name: Remove only the unique image reference from each node
+      ansible.builtin.command:
+        argv: [ctr, --namespace, k8s.io, images, remove, '{{ practice_image }}']
+      loop: '{{ groups[cluster_hosts] }}'
+      delegate_to: '{{ item }}'
+      changed_when: true
+      when: practice_image_imports is defined and item in (practice_image_imports.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0) | map(attribute='item') | list)
+    - name: Remove transferred image archives from the guests
+      ansible.builtin.file:
+        path: '{{ practice_archive }}'
+        state: absent
+      loop: '{{ groups[cluster_hosts] }}'
+      delegate_to: '{{ item }}'
+    - name: Remove the controller's disposable image archive
+      ansible.builtin.file:
+        path: '{{ practice_local_archive }}'
+        state: absent
+      delegate_to: localhost
+      become: false
+    - name: Remove the private builder workspace and its image storage
+      ansible.builtin.file:
+        path: '{{ practice_build_workspace.path }}'
+        state: absent
+      delegate_to: '{{ practice_builder }}'
+      when: practice_build_workspace is defined and practice_build_workspace.path is defined
+- name: Record actual image-building and execution coverage
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Buildah builds and exports an application image", "the image is imported into every cluster node", "a non-root pod executes the built image with registry pulls disabled"] }}'

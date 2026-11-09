@@ -1,0 +1,9 @@
+---
+- name: Verify practical supply-chain clients without creating VMs
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Exercise local analysis and signing clients
+      ansible.builtin.include_tasks: tasks/supply_chain.yml

@@ -24,6 +24,9 @@
   when: rebuild_lab | default(false) | bool
 - name: Build the functional base for the selected certification
   import_playbook: kube_cluster.yml
+- name: Prepare the selected practical certification's guest tools
+  import_playbook: hosts/practical_tools.yml
+  when: certification in ['cka', 'ckad', 'cks', 'cnpe']
 - name: Prepare AppArmor only for the selected security exercises
   import_playbook: security/apparmor.yml
   when: '''apparmor'' in certification_addons | default([])'

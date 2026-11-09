@@ -1,0 +1,91 @@
+---
+- name: Verify SBOM, static analysis and local artifact verification clients
+  delegate_to: localhost
+  become: false
+  environment:
+    PATH: '{{ hostvars.localhost.controller_brew_prefix.stdout | default("/home/linuxbrew/.linuxbrew") }}/bin:{{ lookup("ansible.builtin.env", "PATH") }}'
+  block:
+    - name: Create private disposable supply-chain fixtures
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: certification-supply-chain-
+      register: supply_chain_fixture
+    - name: Create the package and manifest fixture directories
+      ansible.builtin.file:
+        path: '{{ supply_chain_fixture.path }}/{{ item }}'
+        state: directory
+        mode: '0700'
+      loop: [project/lib/python3.14/site-packages/lab_component-1.2.3.dist-info, manifests]
+    - name: Declare a known dependency for the SBOM check
+      ansible.builtin.copy:
+        dest: '{{ supply_chain_fixture.path }}/project/lib/python3.14/site-packages/lab_component-1.2.3.dist-info/METADATA'
+        mode: '0600'
+        content: |
+          Metadata-Version: 2.1
+          Name: lab-component
+          Version: 1.2.3
+          License: MIT
+    - name: Require the SBOM to identify the dependency and its version
+      ansible.builtin.command:
+        argv: [syft, 'dir:{{ supply_chain_fixture.path }}/project', -o, json]
+      register: supply_chain_sbom
+      changed_when: false
+      failed_when: supply_chain_sbom.rc != 0 or (supply_chain_sbom.stdout | from_json).artifacts | selectattr('name', 'equalto', 'lab-component') | selectattr('version', 'equalto', '1.2.3') | list | length != 1
+    - name: Declare an unsafe manifest for negative analysis checks
+      ansible.builtin.copy:
+        dest: '{{ supply_chain_fixture.path }}/manifests/unsafe.yaml'
+        mode: '0600'
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: scanner-fixture
+          spec:
+            hostNetwork: true
+            containers:
+              - name: web
+                image: nginx:latest
+                securityContext:
+                  privileged: true
+    - name: Require KubeLinter to reject the privileged workload
+      ansible.builtin.command:
+        argv: [kube-linter, lint, '{{ supply_chain_fixture.path }}/manifests', --format, json]
+      register: supply_chain_lint
+      changed_when: false
+      failed_when: supply_chain_lint.rc != 1 or 'privileged' not in supply_chain_lint.stdout
+    - name: Require Trivy to identify configuration findings without downloading a vulnerability database
+      ansible.builtin.command:
+        argv: [trivy, config, --skip-check-update, --format, json, '{{ supply_chain_fixture.path }}/manifests']
+      environment:
+        TRIVY_CACHE_DIR: '{{ supply_chain_fixture.path }}/trivy-cache'
+      register: supply_chain_scan
+      changed_when: false
+      failed_when: supply_chain_scan.rc != 0 or (supply_chain_scan.stdout | from_json).Results | selectattr('Misconfigurations', 'defined') | map(attribute='Misconfigurations') | flatten | length == 0
+    - name: Verify a local signature and reject artifact tampering without publishing keys or log entries
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        cd {{ supply_chain_fixture.path | quote }}
+        printf 'original-practice-content\n' > artifact.txt
+        COSIGN_PASSWORD='' cosign generate-key-pair --output-key-prefix lab-key
+        cosign signing-config create --no-default-fulcio --no-default-oidc \
+          --no-default-rekor --no-default-tsa --out local-signing.json
+        COSIGN_PASSWORD='' cosign sign-blob --key lab-key.key --signing-config local-signing.json \
+          --bundle artifact.bundle.json artifact.txt
+        cosign verify-blob --key lab-key.pub --bundle artifact.bundle.json --insecure-ignore-tlog artifact.txt
+        printf 'tampered-content\n' > artifact.txt
+        if cosign verify-blob --key lab-key.pub --bundle artifact.bundle.json --insecure-ignore-tlog artifact.txt; then
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+  always:
+    - name: Remove all temporary keys, scanner caches and fixtures
+      ansible.builtin.file:
+        path: '{{ supply_chain_fixture.path }}'
+        state: absent
+      when: supply_chain_fixture is defined and supply_chain_fixture.path is defined
+- name: Record executed supply-chain checks
+  ansible.builtin.set_fact:
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["Syft reports a known dependency and its version", "KubeLinter rejects a privileged manifest", "Trivy detects manifest configuration risks", "Cosign verifies a local artifact and rejects tampering without public publication"] }}'

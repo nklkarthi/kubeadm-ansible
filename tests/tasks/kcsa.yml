@@ -49,12 +49,19 @@
   register: kcsa_denied
   failed_when: false
   changed_when: false
+- name: Verify the tenant identity cannot read another namespace
+  ansible.builtin.command: kubectl auth can-i get pods -n default --as=system:serviceaccount:{{ test_namespace }}:limited
+  register: kcsa_cross_namespace
+  failed_when: false
+  changed_when: false
 - name: Require the intended least-privilege boundary
   ansible.builtin.assert:
     that:
       - kcsa_allowed.stdout | trim == 'yes'
       - kcsa_denied.rc == 1
       - kcsa_denied.stdout | trim == 'no'
+      - kcsa_cross_namespace.rc == 1
+      - kcsa_cross_namespace.stdout | trim == 'no'
 - name: Enforce the restricted Pod Security Standard in the test namespace
   ansible.builtin.command: kubectl label namespace {{ test_namespace }} pod-security.kubernetes.io/enforce=restricted
     --overwrite
@@ -226,21 +233,51 @@
 - name: Verify the API serving certificate is signed by the cluster CA
   ansible.builtin.command: openssl verify -CAfile /etc/kubernetes/pki/ca.crt /etc/kubernetes/pki/apiserver.crt
   changed_when: false
-- name: Read the bounded audit log
-  ansible.builtin.command: tail -n 30 /var/log/kubernetes/audit/audit.log
-  register: kcsa_audit
+- name: Verify bounded audit records only when the profile selects audit logging
+  when: "'audit' in certification_addons | default([])"
+  block:
+    - name: Read the bounded audit log
+      ansible.builtin.command: tail -n 30 /var/log/kubernetes/audit/audit.log
+      register: kcsa_audit
+      changed_when: false
+    - name: Require actual API audit records
+      ansible.builtin.assert:
+        that:
+          - '''audit.k8s.io'' in kcsa_audit.stdout'
+          - '''RequestResponse'' not in kcsa_audit.stdout'
+- name: Count the active probes before bounding the namespace capacity
+  ansible.builtin.command: kubectl get pods -n {{ test_namespace }} -o json
+  register: boundary_active_pods
   changed_when: false
-- name: Require actual API audit records
-  ansible.builtin.assert:
-    that:
-      - '''audit.k8s.io'' in kcsa_audit.stdout'
-      - '''RequestResponse'' not in kcsa_audit.stdout'
+- name: Select a quota that permits existing probes and rejects another pod
+  ansible.builtin.set_fact:
+    boundary_pod_capacity: '{{ (boundary_active_pods.stdout | from_json)["items"] | rejectattr("status.phase", "in", ["Succeeded", "Failed"]) | list | length }}'
+- name: Bound pod capacity for the disposable namespace
+  ansible.builtin.include_tasks: ../../setup/tasks/apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: practice-capacity
+        namespace: '{{ test_namespace }}'
+      spec:
+        hard:
+          pods: '{{ boundary_pod_capacity | string }}'
+- name: Wait for the quota controller to count all active boundary probes
+  ansible.builtin.command: kubectl get resourcequota practice-capacity -n {{ test_namespace }} -o jsonpath={.status.used.pods}
+  register: boundary_pod_quota
+  changed_when: false
+  until: boundary_pod_quota.rc == 0 and boundary_pod_quota.stdout == boundary_pod_capacity | string
+  retries: 12
+  delay: 2
+- name: Require admission to reject a compliant pod that exceeds the quota
+  ansible.builtin.command:
+    argv: [kubectl, apply, --dry-run=server, -f, '-']
+    stdin: '{{ {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "quota-rejected", "namespace": test_namespace}, "spec": {"securityContext": {"runAsNonRoot": true, "runAsUser": 65534, "seccompProfile": {"type": "RuntimeDefault"}}, "containers": [{"name": "application", "image": "docker.io/library/busybox:1.37.0", "command": ["sleep", "60"], "securityContext": {"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]}}}]}} | to_json }}'
+  register: boundary_quota_rejection
+  changed_when: false
+  failed_when: boundary_quota_rejection.rc == 0 or 'exceeded quota' not in boundary_quota_rejection.stderr
 - name: Record completed security checks
   ansible.builtin.set_fact:
-    certification_completed_checks:
-      - RBAC permits pod reads and denies secret reads
-      - Pod Security Admission rejects privileged containers
-      - restricted non-root pods run with seccomp and reduced capabilities
-      - NetworkPolicy denies traffic and permits the selected client
-      - API serving certificate verifies against the current cluster CA
-      - audit metadata records are written without request or response bodies
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["RBAC permits pod reads and denies secret and cross-namespace pod reads", "Pod Security Admission rejects privileged containers", "restricted non-root pods run with seccomp and reduced capabilities", "NetworkPolicy denies traffic and permits the selected client", "API serving certificate verifies against the current cluster CA", "ResourceQuota rejects an otherwise compliant pod above its capacity"] + (["audit metadata records are written without request or response bodies"] if "audit" in certification_addons | default([]) else []) }}'

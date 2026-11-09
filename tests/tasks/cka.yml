@@ -3,14 +3,8 @@
   ansible.builtin.include_tasks: kcna.yml
 - name: Verify dynamic storage and ingress APIs
   ansible.builtin.include_tasks: storage_routes.yml
-- name: Read node resource metrics through the aggregated API
-  ansible.builtin.command: kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
-  register: cka_node_metrics
-  changed_when: false
-  until: cka_node_metrics.rc == 0 and (cka_node_metrics.stdout | from_json)['items'] | length == groups[cluster_hosts]
-    | length
-  retries: 12
-  delay: 5
+- name: Verify administration access, resource limits and network boundaries
+  ansible.builtin.include_tasks: workload_boundaries.yml
 - name: Validate a recoverable etcd snapshot without replacing live data
   block:
     - name: Save an authenticated etcd snapshot
@@ -72,8 +66,7 @@
         - /var/lib/etcd/certification-restore
 - name: Record verified administration capabilities
   ansible.builtin.set_fact:
-    certification_completed_checks: '{{ certification_completed_checks + [''trusted kubelet serving certificates
-      support node metrics'', ''authenticated etcd snapshot creation and integrity verification'', ''etcd snapshot
+    certification_completed_checks: '{{ certification_completed_checks + [''authenticated etcd snapshot creation and integrity verification'', ''etcd snapshot
       restores into an isolated data directory''] }}'
 - name: Verify API and etcd quorum failover in the selected HA topology
   ansible.builtin.include_tasks: ha_failover.yml

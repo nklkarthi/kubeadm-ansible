@@ -1,4 +1,6 @@
 ---
+- name: Verify the application image build and delivery prerequisites
+  ansible.builtin.include_tasks: image_build.yml
 - name: Verify declarative application delivery and self-healing
   ansible.builtin.include_tasks: kcna.yml
 - name: Verify persistent storage and application routing
@@ -116,3 +118,5 @@
 - name: Record verified rollout and rollback behavior
   ansible.builtin.set_fact:
     certification_completed_checks: '{{ certification_completed_checks + ["application configuration update rolls out to all replicas", "rollout undo restores the original working application"] }}'
+- name: Verify application access, security, quotas and traffic boundaries
+  ansible.builtin.include_tasks: workload_boundaries.yml

@@ -12,9 +12,10 @@
       {{ [{"formula": "kubernetes-cli", "command": "kubectl", "version": tool_versions.kubectl, "version_args": ["version", "--client", "--output=json"]},
           {"formula": "helm", "command": "helm", "version": tool_versions.helm, "version_args": ["version", "--short"]},
           {"formula": "crane", "command": "crane", "version": tool_versions.crane, "version_args": ["version"]}]
-         + ([{"formula": "argocd", "command": "argocd", "version": tool_versions.argocd, "version_args": ["version", "--client", "--short"]},
-             {"formula": "kustomize", "command": "kustomize", "version": tool_versions.kustomize, "version_args": ["version"]}]
+         + ([{"formula": "argocd", "command": "argocd", "version": tool_versions.argocd, "version_args": ["version", "--client", "--short"]}]
             if 'argocd' in certification_addons | default([]) else [])
+         + ([{"formula": "kustomize", "command": "kustomize", "version": tool_versions.kustomize, "version_args": ["version"]}]
+            if certification | default('') in ['cka', 'ckad', 'cks', 'cnpe'] or 'argocd' in certification_addons | default([]) else [])
          + ([{"formula": "argo", "command": "argo", "version": tool_versions.argo_workflows, "version_args": ["version", "--short"]}]
             if 'workflows' in certification_addons | default([]) else [])
          + ([{"formula": "argoproj/tap/kubectl-argo-rollouts", "command": "kubectl-argo-rollouts", "version": tool_versions.argo_rollouts_cli, "version_args": ["version", "--short"]}]
@@ -29,7 +30,12 @@
             if 'kyverno' in certification_addons | default([]) else [])
          + ([{"formula": "cilium-cli", "command": "cilium", "version": tool_versions.cilium_cli, "version_args": ["version", "--client"]},
              {"formula": "hubble", "command": "hubble", "version": tool_versions.hubble_cli, "version_args": ["version"]}]
-            if cni_plugin | default('calico') == 'cilium' else []) }}
+            if cni_plugin | default('calico') == 'cilium' else [])
+         + ([{"formula": "syft", "command": "syft", "version": tool_versions.syft, "version_args": ["version"]},
+             {"formula": "cosign", "command": "cosign", "version": tool_versions.cosign, "version_args": ["version", "--json"]},
+             {"formula": "trivy", "command": "trivy", "version": tool_versions.trivy, "version_args": ["--version"]},
+             {"formula": "kube-linter", "command": "kube-linter", "version": tool_versions.kube_linter, "version_args": ["version"]}]
+            if controller_supply_chain_tools | default(false) | bool else []) }}
   environment:
     HOMEBREW_NO_AUTO_UPDATE: '1'
   tasks:

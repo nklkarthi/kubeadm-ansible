@@ -1,0 +1,5 @@
+---
+- name: Prepare optional clients for supply-chain practical exercises
+  import_playbook: controller_tools.yml
+  vars:
+    controller_supply_chain_tools: true
