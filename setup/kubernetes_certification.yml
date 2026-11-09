@@ -6,12 +6,10 @@
   vars_files:
     - vars/common.yml
   tasks:
-    - name: Require a supported certification and explicit rebuild choice
+    - name: Require a supported Kubernetes certification
       ansible.builtin.assert:
         that:
-          - certification is defined
-          - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
-            'otca', 'kca', 'cnpa', 'cnpe']
+          - certification | default('') in kubernetes_certifications
 - name: Prepare the pinned certification controller tools
   import_playbook: hosts/controller_tools.yml
 - name: Reset only when a certification rebuild is explicitly requested
@@ -60,4 +58,4 @@
   import_playbook: hosts/client_access.yml
 - name: Test the selected certification environment
   import_playbook: ../tests/certification.yml
-  when: run_certification_checks | default(true) | bool
+  when: run_certification_checks | default(true) | bool and not certification_checks_deferred | default(false) | bool

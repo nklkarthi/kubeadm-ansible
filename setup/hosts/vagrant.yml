@@ -9,12 +9,11 @@
   vars:
     vagrant_state: started
     vagrant_nodes: [master, worker-01, worker-02]
-    vagrant_provider: '{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}'
+    vagrant_start_args: [up, '--provider={{ vagrant_provider }}', --no-parallel]
     vagrant_commands:
-      started: [up, '--provider={{ vagrant_provider }}', --no-parallel, --provision]
+      started: '{{ vagrant_start_args + (["--provision"] if vagrant_reprovision | default(false) | bool else ["--no-provision"]) }}'
       stopped: [halt]
       absent: [destroy, --force]
-      status: [status]
   environment:
     VAGRANT_LAB_PROVIDER: '{{ vagrant_provider }}'
     VAGRANT_LAB_MASTER_MEMORY_MB: '{{ vagrant_master_memory_mb | default(4096) | string }}'
@@ -26,25 +25,22 @@
           - vagrant_provider in ['hyperv', 'virtualbox']
           - vagrant_nodes | length > 0
           - vagrant_nodes | difference(vagrant_managed_nodes) | length == 0
-    - name: Read machine states before creating any guests
+    - name: Read machine states before applying the requested operation
       ansible.builtin.command:
         argv: ['{{ repository_root }}/scripts/vagrant.sh', status, --machine-readable]
       register: vagrant_before
       changed_when: false
-      when: vagrant_state == 'started'
-    - name: Select only guests that require their first boot
-      ansible.builtin.set_fact:
-        new_vagrant_nodes: '{{ vagrant_nodes | select("in", vagrant_before.stdout | regex_findall("(?m)^[^,]+,([^,]+),state,not_created$")) | list }}'
-      when: vagrant_state == 'started'
-    - name: Preserve the requested order when selecting existing guests
-      ansible.builtin.set_fact:
-        existing_vagrant_nodes: '{{ vagrant_nodes | reject("in", new_vagrant_nodes) | list }}'
-      when: vagrant_state == 'started'
+    - name: Select lifecycle targets from current provider state
+      ansible.builtin.import_tasks: ../tasks/vagrant_state.yml
+    - name: Show the requested machine states
+      ansible.builtin.debug:
+        msg: '{{ dict(vagrant_nodes | zip(vagrant_nodes | map("extract", vagrant_machine_states))) }}'
+      when: vagrant_state == 'status'
     - name: Apply the requested operation to existing guests
       ansible.builtin.command:
-        argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands[vagrant_state] + (existing_vagrant_nodes if vagrant_state == "started" else vagrant_nodes) }}'
-      changed_when: vagrant_state != 'status'
-      when: vagrant_state != 'started' or existing_vagrant_nodes | length > 0
+        argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands[vagrant_state] + vagrant_operation_nodes }}'
+      changed_when: true
+      when: vagrant_state != 'status' and vagrant_operation_nodes | length > 0
     - name: Remove SSH access markers for deleted guests
       ansible.builtin.file:
         path: '{{ repository_root }}/artifacts/vagrant/access/{{ item }}-{{ vagrant_provider }}.id'

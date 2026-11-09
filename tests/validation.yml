@@ -3,6 +3,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars_files:
+    - ../setup/vars/common.yml
   vars:
     addon_namespace: lab-argo
     manifest_source_namespace: argocd
@@ -99,6 +101,52 @@
       current-context: lab
     repository_root: '{{ playbook_dir | dirname }}'
   tasks:
+    - name: Require the certification catalog and component task files to match the source tree
+      ansible.builtin.assert:
+        that:
+          - query('ansible.builtin.fileglob', repository_root ~ '/profiles/certifications/*.yml') | map('basename') | map('regex_replace', '\.yml$', '') | sort == supported_certifications | sort
+          - query('ansible.builtin.fileglob', repository_root ~ '/setup/tasks/addons/*.yml') | map('basename') | map('regex_replace', '\.yml$', '') | sort == native_stack_components | sort
+          - >-
+            (lookup('ansible.builtin.file', repository_root ~ '/scripts/hyperv_setup.ps1') | split('\n') | select('search', 'ValidateScript') | first | regex_findall("'([a-z]+)'") | sort) == supported_certifications | sort
+    - name: Verify lifecycle selection without creating or stopping VMs
+      ansible.builtin.include_tasks: tasks/vagrant_lifecycle.yml
+      loop:
+        - state: absent
+          nodes: [worker-01, master, worker-02]
+          stdout: "1,master,state,running\n1,worker-01,state,poweroff\n1,worker-02,state,not_created\n"
+          expected: [worker-01, master]
+        - state: stopped
+          nodes: [worker-01, master, worker-02]
+          stdout: "1,master,state,running\n1,worker-01,state,poweroff\n1,worker-02,state,not_created\n"
+          expected: [master]
+        - state: stopped
+          nodes: [master, worker-01, worker-02]
+          stdout: "1,master,state,off\r\n1,worker-01,state,saved\r\n1,worker-02,state,paused\r\n"
+          expected: [worker-01, worker-02]
+        - state: absent
+          nodes: [master, worker-01]
+          stdout: "1,master,state,not_created\n1,worker-01,state,not_created\n"
+          expected: []
+        - state: started
+          nodes: [worker-01, master, worker-02]
+          stdout: "1,master,state,running\n1,worker-01,state,poweroff\n1,worker-02,state,not_created\n"
+          expected: [worker-01]
+        - state: started
+          reprovision: true
+          nodes: [worker-01, master, worker-02]
+          stdout: "1,master,state,running\n1,worker-01,state,poweroff\n1,worker-02,state,not_created\n"
+          expected: [worker-01, master]
+        - state: started
+          nodes: [master]
+          stdout: "1,master,state,running\n"
+          expected: []
+        - state: status
+          nodes: [master]
+          stdout: "1,master,state,running\n"
+          expected: []
+      loop_control:
+        loop_var: lifecycle_case
+        label: '{{ lifecycle_case.state }}: {{ lifecycle_case.nodes | join(", ") }}'
     - name: Render the shared template
       ansible.builtin.set_fact:
         rendered: '{{ lookup(''ansible.builtin.template'', playbook_dir ~ ''/../setup/templates/manifest-list.json.j2'')

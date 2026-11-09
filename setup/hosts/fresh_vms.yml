@@ -28,7 +28,7 @@
       changed_when: false
     - name: Read the selected guests' previous identity files
       ansible.builtin.stat:
-        path: '{{ fresh_state_path.stdout }}/machines/{{ item }}/{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}/id'
+        path: '{{ fresh_state_path.stdout }}/machines/{{ item }}/{{ vagrant_provider }}/id'
       loop: '{{ fresh_vagrant_nodes }}'
       register: fresh_old_id_files
     - name: Remember existing VM identities for the replacement check
@@ -69,7 +69,7 @@
   tasks:
     - name: Read the current managed VM identities
       ansible.builtin.set_fact:
-        fresh_vm_identities: '{{ fresh_vm_identities | combine({item: lookup("ansible.builtin.file", repository_root ~ "/artifacts/vagrant/access/" ~ item ~ "-" ~ ("hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox") ~ ".id") | trim}) }}'
+        fresh_vm_identities: '{{ fresh_vm_identities | combine({item: lookup("ansible.builtin.file", repository_root ~ "/artifacts/vagrant/access/" ~ item ~ "-" ~ vagrant_provider ~ ".id") | trim}) }}'
       loop: '{{ fresh_vagrant_nodes }}'
     - name: Require fresh virtual machines instead of reusing the previous certification's guests
       ansible.builtin.assert:

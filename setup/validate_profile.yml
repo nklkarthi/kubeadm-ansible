@@ -1,0 +1,10 @@
+---
+- name: Validate the certification profile and topology without contacting guests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/common.yml
+  tasks:
+    - name: Validate certification prerequisites
+      ansible.builtin.import_tasks: tasks/certification_profile.yml

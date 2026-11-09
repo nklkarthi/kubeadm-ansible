@@ -14,10 +14,11 @@
           - groups[worker_hosts] | length == 1
           - groups['ha_load_balancer'] | default([]) | length == 1
           - control_plane_endpoint is defined
-    - name: Stop the unused worker to release memory for the two small control planes
-      ansible.builtin.command:
-        argv: ['{{ repository_root }}/scripts/vagrant.sh', halt, worker-02]
-      changed_when: true
+- name: Stop the unused worker to release memory for the two small control planes
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_state: stopped
+    vagrant_nodes: [worker-02]
 - name: Provision only the VMs selected for the HA exercise
   import_playbook: vagrant.yml
   vars:

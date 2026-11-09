@@ -1,0 +1,67 @@
+---
+- name: Require a supported certification profile
+  ansible.builtin.assert:
+    that: certification | default('') in supported_certifications
+    fail_msg: Select a profile from profiles/certifications and its matching inventory.
+- name: Require the selected Linux or Kubernetes inventory before changing hosts
+  ansible.builtin.assert:
+    that:
+      - >-
+        (certification in linux_certifications and
+         groups['linux_hosts'] | default([]) | length == 1 and
+         groups[cluster_hosts] | default([]) | length == 0 and
+         hostvars[groups['linux_hosts'][0]].vagrant_name | default(certification) == certification) or
+        (certification in kubernetes_certifications and
+         groups[control_plane_hosts] | default([]) | length > 0 and
+         groups[cluster_hosts] | default([]) | length > 0 and
+         groups['linux_hosts'] | default([]) | length == 0)
+    fail_msg: Use the dedicated LFCS/LFCA inventory for Linux profiles and a Kubernetes inventory for other profiles.
+- name: Validate the cluster role partition before provisioning or reset
+  ansible.builtin.include_tasks: cluster_inventory.yml
+  when: certification in kubernetes_certifications
+- name: Require the topology selected by a dedicated entry point
+  ansible.builtin.assert:
+    that: >-
+      (required_certification_topology == 'mesh' and certification == 'cca' and groups['mesh_hosts'] | default([]) | length == 1) or
+      (required_certification_topology == 'ha' and certification == 'cka' and groups['ha_load_balancer'] | default([]) | length == 1)
+    fail_msg: The dedicated CCA and HA entry points require their matching certification and topology inventory.
+  when: required_certification_topology | default('') | length > 0
+- name: Require a distinct mesh cluster only for the CCA topology
+  ansible.builtin.assert:
+    that:
+      - certification == 'cca'
+      - groups['mesh_hosts'] | length == 1
+      - groups['mesh_hosts'] | intersect(groups[cluster_hosts]) | length == 0
+      - cni_plugin | default('calico') == 'cilium'
+    fail_msg: The separate mesh guest belongs to the dedicated CCA inventory and Cilium profile.
+  when: groups['mesh_hosts'] | default([]) | length > 0
+- name: Require the dedicated inventory before replacing VMs for CCA
+  ansible.builtin.assert:
+    that: groups['mesh_hosts'] | default([]) | length == 1
+    fail_msg: Fresh local CCA runs require inventories/cca.ini to provision both clusters.
+  when: certification == 'cca' and certification_fresh_run | default(false) | bool
+- name: Limit the optional HA topology to its CKA exercise
+  ansible.builtin.assert:
+    that:
+      - certification == 'cka'
+      - groups[control_plane_hosts] | length == 3
+      - groups[worker_hosts] | length == 1
+      - groups['ha_load_balancer'] | length == 1
+      - groups['ha_load_balancer'] | difference(groups[worker_hosts]) | length == 0
+      - control_plane_endpoint | default('') | length > 0
+    fail_msg: Use the CKA profile with inventories/ha.ini for the optional HA topology.
+  when: groups['ha_load_balancer'] | default([]) | length > 0
+- name: Validate selected Kubernetes components and their dependencies
+  ansible.builtin.assert:
+    that:
+      - certification_addons | default([]) is sequence
+      - certification_addons | default([]) is not string
+      - certification_addons | default([]) is not mapping
+      - certification_addons | default([]) | difference(native_stack_components + playbook_components) | length == 0
+      - certification_addons | default([]) | unique | length == certification_addons | default([]) | length
+      - "'monitoring' not in certification_addons | default([]) or 'argocd' in certification_addons"
+      - "'bookinfo' not in certification_addons | default([]) or 'istio' in certification_addons"
+      - cni_plugin | default('calico') in ['calico', 'cilium']
+      - "'metallb' not in certification_addons | default([]) or metallb_addresses | default([]) | length > 0"
+    fail_msg: Select known, unique components and include Argo CD for monitoring and Istio for Bookinfo.
+  when: certification in kubernetes_certifications

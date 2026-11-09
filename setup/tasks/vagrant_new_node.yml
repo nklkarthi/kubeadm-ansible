@@ -1,7 +1,7 @@
 ---
 - name: Create and provision this fresh guest with two CPUs
   ansible.builtin.command:
-    argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands.started + [new_vagrant_node] }}'
+    argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_start_args + ["--provision", new_vagrant_node] }}'
   changed_when: true
 - name: Reboot this guest onto its static address before creating another guest
   ansible.builtin.command:

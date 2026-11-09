@@ -10,9 +10,7 @@
     - name: Require an explicit supported certification
       ansible.builtin.assert:
         that:
-          - certification is defined
-          - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
-            'otca', 'kca', 'cnpa', 'cnpe']
+          - certification | default('') in kubernetes_certifications
     - name: Read the identity of the cluster under test
       ansible.builtin.command: kubectl get namespace kube-system -o jsonpath={.metadata.uid}
       register: certification_cluster_uid

@@ -1,8 +1,0 @@
----
-- name: Reset the standalone mesh cluster only when explicitly requested
-  import_playbook: ../maintenance/kube_reset.yml
-  vars:
-    reset_allow_minor_switch: true
-  when: rebuild_lab | default(false) | bool
-- name: Build the independently addressed second Cilium cluster
-  import_playbook: ../kube_cluster.yml

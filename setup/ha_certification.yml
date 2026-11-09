@@ -1,5 +1,9 @@
 ---
+- name: Validate the dedicated CKA high availability topology
+  import_playbook: validate_profile.yml
+  vars:
+    required_certification_topology: ha
 - name: Prepare the explicitly selected high availability API endpoint
   import_playbook: hosts/haproxy.yml
 - name: Install and test the high availability certification environment
-  import_playbook: certification_lab.yml
+  import_playbook: kubernetes_certification.yml

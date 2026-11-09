@@ -1,26 +1,9 @@
 ---
 - name: Validate the selected certification before replacing local VMs
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Require an explicit supported certification
-      ansible.builtin.assert:
-        that: certification | default('') in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba', 'otca', 'kca', 'cnpa', 'cnpe', 'lfcs', 'lfca']
-    - name: Require the selected certification's inventory before replacing any guests
-      ansible.builtin.assert:
-        that:
-          - >-
-            (certification in ['lfcs', 'lfca'] and
-             groups['linux_hosts'] | default([]) | length == 1 and
-             groups['control_plane'] | default([]) | length == 0 and
-             hostvars[groups['linux_hosts'][0]].vagrant_name | default('') == certification) or
-            (certification not in ['lfcs', 'lfca'] and
-             groups['control_plane'] | default([]) | length > 0 and
-             groups['cluster_nodes'] | default([]) | length > 0 and
-             groups['linux_hosts'] | default([]) | length == 0)
-        fail_msg: Select the matching Linux inventory for LFCS/LFCA or a Kubernetes inventory for other certifications.
+  import_playbook: validate_profile.yml
+  vars:
+    certification_fresh_run: true
 - name: Replace the managed guests and verify their new identities and CPU stability
   import_playbook: hosts/fresh_vms.yml
 - name: Install and test the selected certification on the clean guests
-  import_playbook: "{{ 'cca_certification.yml' if certification | default('') == 'cca' else ('ha_certification.yml' if groups['ha_load_balancer'] | default([]) | length > 0 else 'certification_lab.yml') }}"
+  import_playbook: certification_lab.yml

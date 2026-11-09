@@ -14,9 +14,11 @@ for profile in profiles/certifications/*.yml; do
     case "${profile##*/}" in
         lfcs.yml) inventory=inventories/lfcs.ini ;;
         lfca.yml) inventory=inventories/lfca.ini ;;
+        cca.yml) inventory=inventories/cca.ini ;;
     esac
     ansible-playbook -i "$inventory" setup/certification_lab.yml -e "@$profile" --syntax-check >/dev/null
     ansible-playbook -i "$inventory" setup/fresh_certification.yml -e "@$profile" --syntax-check >/dev/null
+    ansible-playbook -i "$inventory" setup/validate_profile.yml -e "@$profile" -e certification_fresh_run=true >/dev/null
     count=$((count + 2))
 done
 for playbook in setup/hosts/ha_lab.yml setup/hosts/ha_cleanup.yml; do
@@ -24,8 +26,32 @@ for playbook in setup/hosts/ha_lab.yml setup/hosts/ha_cleanup.yml; do
     count=$((count + 1))
 done
 ansible-playbook -i inventories/cca.ini setup/hosts/cca_lab.yml --syntax-check >/dev/null
-ansible-playbook -i inventories/mesh.ini setup/cluster/mesh_cluster.yml -e @profiles/cilium-mesh.yml --syntax-check >/dev/null
+ansible-playbook -i inventories/mesh.ini setup/kube_cluster.yml -e @profiles/cilium-mesh.yml --syntax-check >/dev/null
 count=$((count + 2))
+expect_profile_failure() {
+    invalid_inventory=$1
+    invalid_profile=$2
+    expected_message=$3
+    shift 3
+    if profile_failure_output=$(ansible-playbook -i "$invalid_inventory" setup/validate_profile.yml -e "@$invalid_profile" "$@" 2>&1); then
+        printf 'Invalid profile/inventory combination unexpectedly passed: %s %s\n' "$invalid_inventory" "$invalid_profile" >&2
+        exit 1
+    fi
+    case "$profile_failure_output" in
+        *"$expected_message"*) ;;
+        *) printf 'Profile validation failed for an unexpected reason: %s\n' "$profile_failure_output" >&2; exit 1 ;;
+    esac
+}
+expect_profile_failure inventories/lfcs.ini profiles/certifications/lfca.yml 'Use the dedicated LFCS/LFCA inventory'
+expect_profile_failure setup/inventory profiles/certifications/lfcs.yml 'Use the dedicated LFCS/LFCA inventory'
+expect_profile_failure inventories/cca.ini profiles/certifications/ckad.yml 'The separate mesh guest belongs'
+expect_profile_failure setup/inventory profiles/certifications/cca.yml 'Fresh local CCA runs require' -e certification_fresh_run=true
+expect_profile_failure inventories/ha.ini profiles/certifications/ckad.yml 'Use the CKA profile with inventories/ha.ini'
+expect_profile_failure setup/inventory profiles/certifications/ckad.yml 'Select known, unique components' -e '{"certification_addons":["monitoring"]}'
+expect_profile_failure setup/inventory profiles/certifications/ckad.yml 'Select a profile from profiles/certifications' -e certification=unknown
+ansible-playbook -i inventories/ha.ini setup/validate_profile.yml -e @profiles/certifications/cka.yml -e certification_fresh_run=true >/dev/null
+ansible-playbook -i inventories/pluralsight.ini.example setup/validate_profile.yml -e @profiles/certifications/cca.yml >/dev/null
+printf '%s\n' '17 fresh-profile contracts, HA/cloud variants and 7 invalid combinations checked'
 printf '%s syntax checks passed\n' "$count"
 ansible-lint --offline
 ansible-playbook -i localhost, -c local tests/validation.yml

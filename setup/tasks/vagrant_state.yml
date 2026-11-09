@@ -1,0 +1,28 @@
+---
+- name: Parse the provider's machine-readable VM states
+  ansible.builtin.set_fact:
+    vagrant_machine_states: '{{ dict(vagrant_before.stdout | regex_findall("(?m)^[^,]+,([^,]+),state,([^\r\n]+)\r?$")) }}'
+- name: Require a provider state for every selected machine
+  ansible.builtin.assert:
+    that: vagrant_nodes | difference(vagrant_machine_states.keys() | list) | length == 0
+    fail_msg: Vagrant did not return a state for every selected machine; no lifecycle operation will run.
+- name: Select uncreated and already inactive machines
+  ansible.builtin.set_fact:
+    new_vagrant_nodes: '{{ vagrant_nodes | select("in", vagrant_machine_states | dict2items | selectattr("value", "equalto", "not_created") | map(attribute="key") | list) | list }}'
+    inactive_vagrant_nodes: '{{ vagrant_machine_states | dict2items | selectattr("value", "in", ["not_created", "poweroff", "off", "stopped"]) | map(attribute="key") | list }}'
+    running_vagrant_nodes: '{{ vagrant_machine_states | dict2items | selectattr("value", "equalto", "running") | map(attribute="key") | list }}'
+- name: Preserve requested order while selecting only machines needing an operation
+  ansible.builtin.set_fact:
+    vagrant_operation_nodes: '{{ vagrant_nodes | reject("in", new_vagrant_nodes) | list }}'
+- name: Keep already running machines unchanged unless reprovisioning was requested
+  ansible.builtin.set_fact:
+    vagrant_operation_nodes: '{{ vagrant_operation_nodes | reject("in", running_vagrant_nodes) | list }}'
+  when: vagrant_state == 'started' and not vagrant_reprovision | default(false) | bool
+- name: Halt only machines that are not already inactive
+  ansible.builtin.set_fact:
+    vagrant_operation_nodes: '{{ vagrant_nodes | reject("in", inactive_vagrant_nodes) | list }}'
+  when: vagrant_state == 'stopped'
+- name: Keep status queries read only
+  ansible.builtin.set_fact:
+    vagrant_operation_nodes: []
+  when: vagrant_state == 'status'

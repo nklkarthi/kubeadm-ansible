@@ -1,0 +1,12 @@
+---
+- name: Require a complete partition of the selected nodes into supported roles
+  ansible.builtin.assert:
+    that:
+      - groups[cluster_hosts] | default([]) | length > 0
+      - groups[control_plane_hosts] | default([]) | length >= 1
+      - groups[worker_hosts] | default([]) | length > 0 or (allow_single_node | default(false) | bool and groups[cluster_hosts] | length == 1 and groups[control_plane_hosts] | length == 1)
+      - groups[control_plane_hosts] | length == 1 or control_plane_endpoint | default('') | length > 0
+      - groups[control_plane_hosts] | intersect(groups[worker_hosts] | default([])) | length == 0
+      - groups[control_plane_hosts] | union(groups[worker_hosts] | default([])) | difference(groups[cluster_hosts]) | length == 0
+      - groups[cluster_hosts] | difference(groups[control_plane_hosts] | union(groups[worker_hosts] | default([]))) | length == 0
+    fail_msg: Select complete node roles; multiple control planes require a reachable control_plane_endpoint. A standalone node requires allow_single_node=true.

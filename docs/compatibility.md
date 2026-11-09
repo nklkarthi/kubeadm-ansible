@@ -21,7 +21,6 @@ Update the pin, release checksum and Kubernetes range together when changing a r
 | Falco | 0.45.2 | `modern_ebpf` requires kernel BTF; `kmod` requires matching headers |
 | Gitea | 28.3.0 | Guest service, independent of Kubernetes APIs |
 | Bash-it | 3.2.0 | Guest shell framework |
-| ingress-nginx | 1.15.1 | Retired; explicit historical-lab option and Kubernetes 1.31–1.35 only |
 
 The fresh Kubernetes 1.36 profile is the common choice for the pinned Cilium,
 cert-manager and Rancher releases. Do not apply that profile as a downgrade to an
@@ -59,4 +58,3 @@ tracing provider before creating tracing policies.
 - [Prometheus Helm charts](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 - [gVisor installation](https://gvisor.dev/docs/user_guide/install/)
 - [Falco installation](https://falco.org/docs/setup/)
-- [Ingress NGINX retirement](https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/)

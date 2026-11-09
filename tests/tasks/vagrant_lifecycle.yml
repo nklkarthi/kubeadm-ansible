@@ -1,0 +1,12 @@
+---
+- name: Select VM lifecycle targets through the production state parser
+  ansible.builtin.include_tasks: ../../setup/tasks/vagrant_state.yml
+  vars:
+    vagrant_before:
+      stdout: '{{ lifecycle_case.stdout }}'
+    vagrant_state: '{{ lifecycle_case.state }}'
+    vagrant_nodes: '{{ lifecycle_case.nodes }}'
+    vagrant_reprovision: '{{ lifecycle_case.reprovision | default(false) }}'
+- name: Require the expected operation targets and preserve caller ordering
+  ansible.builtin.assert:
+    that: vagrant_operation_nodes == lifecycle_case.expected

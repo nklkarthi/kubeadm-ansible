@@ -1,5 +1,42 @@
 ---
-- name: Destroy all managed lab VMs, writable disks and regenerable lab caches
-  import_playbook: linux_cleanup.yml
+- name: Stop and destroy the selected practice VMs and their writable disks
+  import_playbook: ../hosts/vagrant.yml
   vars:
-    cleanup_vagrant_nodes: '{{ vagrant_managed_nodes }}'
+    vagrant_state: absent
+    vagrant_nodes: '{{ cleanup_vagrant_nodes | default(vagrant_managed_nodes) }}'
+- name: Remove regenerable lab caches while retaining keys and verification reports
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Remove obsolete service access details when every managed guest is deleted
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/access/{{ item }}'
+        state: absent
+      loop: [current.yml, credentials.yml, argocd-server.crt]
+      when: vagrant_managed_nodes | difference(cleanup_vagrant_nodes | default(vagrant_managed_nodes)) | length == 0
+    - name: Remove downloaded and imported lab cache files
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/{{ item }}'
+        state: absent
+      loop: [downloads, images, charts, helm-values, disposable]
+    - name: Remove stale entries from Vagrant's machine index
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', global-status, --prune]
+      changed_when: false
+    - name: Read remaining lab box cache entries
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', box, list, --machine-readable]
+      register: cleanup_boxes
+      changed_when: false
+    - name: Remove unused lab base boxes without forcing removal of boxes still in use
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', box, remove, '{{ item }}', '--provider={{ vagrant_provider }}', --all, --no-tty]
+        stdin: 'n'
+      loop: [almalinux/10, gusztavvargadr/ubuntu-server-2404-lts, bento/ubuntu-24.04]
+      when: item in cleanup_boxes.stdout
+      register: cleanup_box
+      changed_when: cleanup_box.rc == 0 and 'Removing box' in cleanup_box.stdout
+      failed_when: cleanup_box.rc != 0 and (cleanup_box.stdout ~ cleanup_box.stderr) is not search('(?i)in use|being used')

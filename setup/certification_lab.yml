@@ -1,3 +1,5 @@
 ---
-- name: Select the Linux or Kubernetes certification environment
-  import_playbook: "{{ 'linux_certification.yml' if certification | default('') in ['lfcs', 'lfca'] else 'kubernetes_certification.yml' }}"
+- name: Validate the profile and inventory before configuring an existing environment
+  import_playbook: validate_profile.yml
+- name: Select the certification environment and its topology
+  import_playbook: "{{ 'linux_certification.yml' if certification | default('') in ['lfcs', 'lfca'] else ('cca_certification.yml' if certification | default('') == 'cca' and groups['mesh_hosts'] | default([]) | length > 0 else ('ha_certification.yml' if groups['ha_load_balancer'] | default([]) | length > 0 else 'kubernetes_certification.yml')) }}"

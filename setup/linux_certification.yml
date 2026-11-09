@@ -3,14 +3,17 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars_files:
+    - vars/common.yml
   tasks:
     - name: Require a Linux certification and an isolated guest
       ansible.builtin.assert:
         that:
-          - certification | default('') in ['lfcs', 'lfca']
+          - certification | default('') in linux_certifications
           - groups['linux_hosts'] | default([]) | length > 0
           - groups['linux_hosts'] | intersect(groups['cluster_nodes'] | default([])) | length == 0
 - name: Prepare the Linux administration environment
   import_playbook: hosts/linux_foundation.yml
 - name: Verify the Linux administration environment
   import_playbook: ../tests/linux.yml
+  when: run_certification_checks | default(true) | bool

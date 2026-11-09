@@ -16,7 +16,6 @@ tool_versions:
   falco_rules: 5.2.0
   gitea: 28.3.0
   bash_it: v3.2.0
-  ingress_nginx: v1.15.1
   prometheus_stack: 93.1.0
   helm: v4.3.1
   crane: v0.22.1
@@ -78,8 +77,6 @@ lab_nodeports:
   istio_grafana: 30093
   istio_jaeger: 30094
   istio_kiali: 30095
-  legacy_nginx_http: 30096
-  legacy_nginx_https: 30496
   traefik_http: 30090
   traefik_https: 30490
   backstage: 30097
@@ -89,6 +86,12 @@ lab_nodeports:
 cluster_hosts: cluster_nodes
 control_plane_hosts: control_plane
 worker_hosts: worker_nodes
+linux_certifications: [lfcs, lfca]
+supported_certifications: [kcna, kcsa, cka, ckad, cks, pca, ica, cca, capa, cgoa, cba, otca, kca, cnpa, cnpe, lfcs, lfca]
+kubernetes_certifications: '{{ supported_certifications | difference(linux_certifications) }}'
+native_stack_components: [audit, storage, traefik, metallb, workflows, rollouts, events, otel, kyverno, backstage, crossplane]
+playbook_components: [apparmor, gvisor, falco, metrics, kube_bench, argocd, istio, bookinfo, monitoring]
+vagrant_provider: '{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}'
 vagrant_managed_nodes: [master, worker-01, worker-02, ha-01, ha-02, mesh-01, lfcs, lfca]
 cilium_lab_mesh_clusters:
   home:

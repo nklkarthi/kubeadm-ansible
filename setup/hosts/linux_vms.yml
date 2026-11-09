@@ -11,10 +11,11 @@
         that:
           - groups['linux_hosts'] | default([]) | length == 1
           - hostvars[groups['linux_hosts'][0]].vagrant_name in ['lfcs', 'lfca']
-    - name: Stop the main Kubernetes VMs while the Linux-only guest is selected
-      ansible.builtin.command:
-        argv: ['{{ repository_root }}/scripts/vagrant.sh', halt, master, worker-01, worker-02]
-      changed_when: true
+- name: Stop the main Kubernetes VMs while the Linux-only guest is selected
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_state: stopped
+    vagrant_nodes: [master, worker-01, worker-02]
 - name: Replace only the selected Linux VM when explicitly requested
   import_playbook: vagrant.yml
   vars:

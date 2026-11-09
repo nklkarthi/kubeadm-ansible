@@ -88,6 +88,7 @@ define **how**, and tests verify the deployed environment.
 | `profiles/certifications/` | Certification component selection and study topics |
 | `setup/fresh_certification.yml` | Delete the previous managed VMs, create fresh guests, then install and test the selected certification |
 | `setup/certification_lab.yml` | Configure an existing environment; selects the Linux or Kubernetes workflow |
+| `setup/validate_profile.yml` | Check profile, inventory, component dependencies and topology locally before provisioning |
 | `setup/linux_certification.yml` | Linux tools, services and functional checks |
 | `setup/kubernetes_certification.yml` | Kubernetes, selected add-ons, client initialization and certification checks |
 | `setup/kube_cluster.yml`, `setup/fresh_cluster.yml` | Configure the base cluster, or recreate its VMs first |
@@ -112,6 +113,11 @@ ansible-playbook -i setup/inventory setup/certification_lab.yml \
   -e @profiles/certifications/capa.yml
 ```
 
+Use the same inventory and profile with `setup/validate_profile.yml` to check the
+selection before creating or configuring hosts. The shared entry point selects
+the two-cluster CCA workflow with `inventories/cca.ini`, or the CKA HA workflow
+with `inventories/ha.ini`. LFCS and LFCA require their dedicated Linux inventories.
+
 For a fresh local certification environment on macOS, use
 `setup/fresh_certification.yml` with the same inventory and profile. On WSL,
 the Windows launch command below provides the VM-management privileges:
@@ -126,6 +132,12 @@ A fresh certification run deletes **all managed lab VMs and their writable disks
 then creates only the selected environment. To keep the other Linux guest, use
 the targeted Linux workflow in the [Linux guide](docs/linux-certifications.md).
 Normal configuration runs use `setup/certification_lab.yml` and do not recreate VMs.
+
+Fresh runs deliberately replace infrastructure. Existing-environment runs
+reconcile managed configuration. Their default verification creates and removes
+temporary workloads, so a successful repeat can report test-related changes.
+For an installation-only repeat, add `-e run_certification_checks=false`; run the
+matching test playbook afterwards. This option applies to Linux and Kubernetes profiles.
 
 Connect with SSH for Linux exercises or use the selected Kubernetes context and
 clients for Kubernetes exercises. Read `artifacts/access/current.yml` for selected
@@ -184,6 +196,9 @@ The Vagrant playbook creates the three main nodes in order and checks their OS,
 CPU count, RAM, and inventory addresses. New guests are rebooted after provisioning
 to check persistent configuration. Additional certification VMs remain stopped
 until selected explicitly.
+Starting an existing guest preserves its provisioned OS settings; an already
+running guest needs no start operation. Pass `-e vagrant_reprovision=true` to
+explicitly rerun the Vagrant guest provisioner. New guests always run it.
 
 `scripts/vagrant.sh` installs Vagrant through Homebrew when necessary. On WSL,
 it uses native Hyper-V and stages the Vagrantfile and provider state under
@@ -290,7 +305,6 @@ on a later bootstrap run with `-e verify_network=true`.
 | `setup/security/gvisor.yml` | gVisor and its RuntimeClass |
 | `setup/security/falco_install.yml` | Falco runtime security |
 | `setup/addons/rancher_install.yml` | Rancher on a compatible lab management cluster |
-| `setup/addons/ingress_nginx.yml` | Historical ingress-nginx exercises only |
 | `setup/maintenance/get-internal-ips.yml` | Selected guest addresses |
 | `setup/hosts/repair_clone_identity.yml` | Unique machine IDs for cloned workers |
 
@@ -395,8 +409,8 @@ sh scripts/validate_playbooks.sh
 ```
 
 The validator checks both inventory profiles, lints the playbooks, and tests
-manifest overrides, runtime configuration, and kubeconfig isolation with
-temporary local files. It does
+all certification/inventory contracts, lifecycle targeting, manifest overrides,
+runtime configuration and kubeconfig isolation with temporary local files. It does
 not deploy optional applications. Run `setup/cluster/verify_cluster.yml` for live base
 cluster checks. To test DNS and cross-worker service traffic with temporary
 BusyBox pods, run:

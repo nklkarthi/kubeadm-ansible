@@ -1,7 +1,8 @@
 # Certification lab execution order
 
-Start with a functional base cluster. Add tools only for the certification and
-exercise you are working on. Do not install every stack on the home VMs.
+Select a certification profile and its inventory. Kubernetes profiles prepare
+the functional cluster before their selected components; Linux profiles prepare
+an isolated Linux guest. Run one certification environment at a time.
 
 The [Golden Kubestronaut program](https://www.cncf.io/training/kubestronaut/)
 currently includes 15 CNCF certifications plus LFCS, giving 16 in total.
@@ -10,7 +11,8 @@ LFCA is an additional Linux Foundation certification supported by a separate pro
 
 ## Base cluster
 
-Run from the repository root with the selected inventory:
+For a base-only Kubernetes lab, run from the repository root with the selected
+inventory. Certification entry points include this step automatically:
 
 ```bash
 ansible-playbook -i setup/inventory setup/kube_cluster.yml
@@ -75,6 +77,20 @@ For a fresh Kubernetes lab, add `-e rebuild_lab=true`. This resets the selected
 inventory's cluster before rebuilding it; use a disposable practice cluster.
 Choose one certification at a time. Each profile fixes compatible tool versions
 rather than installing whichever release happens to be newest that day.
+
+Both fresh and existing-environment entry points validate the selection before
+changing hosts. Preview the same checks locally with:
+
+```bash
+ansible-playbook -i setup/inventory setup/validate_profile.yml \
+  -e @profiles/certifications/ckad.yml
+```
+
+Use `inventories/cca.ini` for the two-cluster CCA lab, `inventories/ha.ini` for
+the optional CKA HA lab, and the corresponding Linux inventory for LFCS/LFCA.
+The existing-environment entry point routes these topologies automatically.
+Use `-e run_certification_checks=false` for installation-only reconciliation;
+the matching test playbook runs the functional checks separately.
 
 | Certification | Prerequisites and component order | Practice focus |
 | --- | --- | --- |
