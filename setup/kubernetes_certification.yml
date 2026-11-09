@@ -11,7 +11,7 @@
         that:
           - certification is defined
           - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
-            'otca', 'kca', 'cnpa', 'cnpe', 'lfcs']
+            'otca', 'kca', 'cnpa', 'cnpe']
 - name: Prepare the pinned certification controller tools
   import_playbook: hosts/controller_tools.yml
 - name: Reset only when a certification rebuild is explicitly requested
@@ -55,3 +55,4 @@
   import_playbook: addons/certification_stack.yml
 - name: Test the selected certification environment
   import_playbook: ../tests/certification.yml
+  when: run_certification_checks | default(true) | bool

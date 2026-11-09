@@ -1,0 +1,32 @@
+---
+- name: Check optional authenticated GitHub CLI access for checksummed release assets
+  ansible.builtin.command:
+    argv: [gh, auth, status, --hostname, github.com]
+  delegate_to: localhost
+  become: false
+  register: controller_download_github_login
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - download_spec.url is match('^https://github.com/[^/]+/[^/]+/releases/download/[^/]+/[^/]+$')
+    - download_spec.checksum | default('') is match('^(sha256|sha512):[a-fA-F0-9]+$')
+- name: Download release assets through the authenticated controller when available
+  ansible.builtin.include_tasks: github_release_download.yml
+  when: controller_download_github_login.rc | default(1) == 0
+- name: Download and verify the pinned file on macOS or WSL
+  when: controller_download_github_login.rc | default(1) != 0
+  ansible.builtin.get_url:
+    url: "{{ download_spec.url }}"
+    dest: "{{ controller_download_path }}"
+    checksum: "{{ download_spec.checksum | default(omit) }}"
+    mode: "0600"
+    timeout: "{{ download_spec.timeout | default(60) }}"
+  delegate_to: localhost
+  become: false
+  throttle: 1
+  register: controller_download_result
+  until: controller_download_result is succeeded
+  retries: '{{ download_spec.retries | default(3) }}'
+  delay: 5

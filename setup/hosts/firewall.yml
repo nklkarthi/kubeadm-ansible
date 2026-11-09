@@ -38,6 +38,12 @@
       when: inventory_hostname in groups[control_plane_hosts]
       register: api_rule
       changed_when: '''Rule added'' in api_rule.stdout or ''Rules updated'' in api_rule.stdout'
+    - name: Permit explicitly selected peer nodes in another lab cluster
+      ansible.builtin.command:
+        argv: [ufw, allow, from, '{{ item }}']
+      loop: '{{ additional_node_ips | default([]) }}'
+      register: remote_peer_rule
+      changed_when: "'Rule added' in remote_peer_rule.stdout or 'Rules updated' in remote_peer_rule.stdout"
     - name: Allow lab NodePorts on all nodes that can host a NodePort service
       ansible.builtin.command:
         argv:
@@ -55,7 +61,8 @@
           - ufw
           - allow
           - from
-          - '{{ pod_network_cidr | default(''10.244.0.0/16'') }}'
+          - '{{ item }}'
+      loop: '{{ ([pod_network_cidr | default("10.244.0.0/16")] + additional_pod_network_cidrs | default([])) | unique }}'
       register: pod_rule
       changed_when: '''Rule added'' in pod_rule.stdout or ''Rules updated'' in pod_rule.stdout'
     - name: Allow routed pod traffic in both directions
@@ -64,11 +71,9 @@
           - ufw
           - route
           - allow
-          - '{{ item }}'
-          - '{{ pod_network_cidr | default(''10.244.0.0/16'') }}'
-      loop:
-        - from
-        - to
+          - '{{ item.0 }}'
+          - '{{ item.1 }}'
+      loop: '{{ ["from", "to"] | product([pod_network_cidr | default("10.244.0.0/16")] + additional_pod_network_cidrs | default([])) | list }}'
       register: pod_route
       changed_when: '''Rule added'' in pod_route.stdout or ''Rules updated'' in pod_route.stdout'
     - name: Read firewall status

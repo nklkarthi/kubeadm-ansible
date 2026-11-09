@@ -3,7 +3,7 @@
   ansible.builtin.include_tasks: kcna.yml
 - name: Verify platform delivery, observability, policy and self-service
   ansible.builtin.include_tasks: '{{ platform_check }}.yml'
-  loop: [cgoa, storage_routes, pca, workflows, rollouts, otca, kca, crossplane, cba]
+  loop: [cgoa, storage_routes, pca, workflows, rollouts, otca, kca, crossplane, cba, ica]
   loop_control:
     loop_var: platform_check
   vars:

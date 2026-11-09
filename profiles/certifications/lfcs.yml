@@ -1,7 +1,7 @@
 ---
 certification: lfcs
-lfcs_http_port: 18080
-lfcs_lab_root: /var/lib/kubeadm-certifications/lfcs
+linux_http_port: 18080
+linux_lab_root: /var/lib/kubeadm-certifications/lfcs
 manual_study_topics:
   - Time-limited troubleshooting and recovery drills
   - Capacity planning and Linux command fluency

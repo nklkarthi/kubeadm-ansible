@@ -24,7 +24,7 @@
           - vagrant_state in ['started', 'stopped', 'absent', 'status']
           - vagrant_provider in ['hyperv', 'virtualbox']
           - vagrant_nodes | length > 0
-          - vagrant_nodes | difference(['master', 'worker-01', 'worker-02', 'ha-01', 'ha-02', 'mesh-01', 'lfcs']) | length == 0
+          - vagrant_nodes | difference(vagrant_managed_nodes) | length == 0
     - name: Read machine states before creating any guests
       ansible.builtin.command:
         argv: ['{{ repository_root }}/scripts/vagrant.sh', status, --machine-readable]
@@ -44,11 +44,12 @@
         argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands[vagrant_state] + (existing_vagrant_nodes if vagrant_state == "started" else vagrant_nodes) }}'
       changed_when: vagrant_state != 'status'
       when: vagrant_state != 'started' or existing_vagrant_nodes | length > 0
-    - name: Create and provision the selected new guests with two CPUs
-      ansible.builtin.command:
-        argv: '{{ [repository_root ~ "/scripts/vagrant.sh"] + vagrant_commands.started + new_vagrant_nodes }}'
+    - name: Create new guests one at a time and verify their persistent network on reboot
+      ansible.builtin.include_tasks: ../tasks/vagrant_new_node.yml
+      loop: '{{ new_vagrant_nodes | default([]) }}'
+      loop_control:
+        loop_var: new_vagrant_node
       when: vagrant_state == 'started' and new_vagrant_nodes | length > 0
-      changed_when: true
     - name: Locate provider state without copying guest disks into WSL
       ansible.builtin.command:
         argv: ['{{ repository_root }}/scripts/vagrant.sh', --state-path]
@@ -78,7 +79,7 @@
       when: vagrant_state == 'started'
     - name: Select guests that need a reboot to apply their provisioned settings
       ansible.builtin.set_fact:
-        vagrant_reboot_nodes: '{{ vagrant_nodes | select("in", new_vagrant_nodes + (vagrant_reboot_checks.results | selectattr("rc", "equalto", 0) | map(attribute="item") | list)) | list }}'
+        vagrant_reboot_nodes: '{{ vagrant_nodes | select("in", vagrant_reboot_checks.results | selectattr("rc", "equalto", 0) | map(attribute="item") | list) | list }}'
       when: vagrant_state == 'started'
     - name: Reboot only guests with new persistent network or boot configuration
       ansible.builtin.command:

@@ -35,3 +35,27 @@ __pycache__/
 # Pinned controller binaries
 /.tools/
 /.vagrant/
+
+# VM media, installers and downloaded archives
+*.vdi
+*.vhd
+*.vhdx
+*.vmdk
+*.qcow2
+*.box
+*.iso
+*.exe
+*.msi
+*.zip
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.tgz
+
+# Local environment values and Kubernetes credentials
+.env
+.env.*
+!.env.example
+/kubeconfig
+*.kubeconfig
+.kube/

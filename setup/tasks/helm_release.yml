@@ -9,14 +9,12 @@
   delegate_to: localhost
   become: false
 - name: Download and verify the pinned chart archive
-  ansible.builtin.get_url:
-    url: '{{ helm_chart_source.url }}'
-    checksum: '{{ helm_chart_source.checksum }}'
-    dest: '{{ repository_root }}/artifacts/charts/{{ helm_release_name }}-{{ helm_chart_version }}.tgz'
-    mode: '0600'
-    timeout: 60
-  delegate_to: localhost
-  become: false
+  ansible.builtin.include_tasks: controller_download.yml
+  vars:
+    controller_download_path: '{{ repository_root }}/artifacts/charts/{{ helm_release_name }}-{{ helm_chart_version }}.tgz'
+    download_spec:
+      url: '{{ helm_chart_source.url }}'
+      checksum: '{{ helm_chart_source.checksum }}'
 - name: Create the private Helm values directory
   ansible.builtin.file:
     path: '{{ repository_root }}/artifacts/helm-values'
@@ -35,7 +33,7 @@
 - name: Read the existing Helm release
   ansible.builtin.command:
     argv:
-      - '{{ repository_root }}/.tools/bin/helm'
+      - '{{ helm_binary }}'
       - list
       - --namespace
       - '{{ helm_namespace }}'
@@ -53,7 +51,7 @@
 - name: Read the installed Helm overrides
   ansible.builtin.command:
     argv:
-      - '{{ repository_root }}/.tools/bin/helm'
+      - '{{ helm_binary }}'
       - get
       - values
       - '{{ helm_release_name }}'
@@ -80,7 +78,7 @@
 - name: Reconcile only a missing or changed Helm release
   ansible.builtin.command:
     argv:
-      - '{{ repository_root }}/.tools/bin/helm'
+      - '{{ helm_binary }}'
       - upgrade
       - --install
       - --reset-values
@@ -104,7 +102,7 @@
 - name: Read the deployed release resources
   ansible.builtin.command:
     argv:
-      - '{{ repository_root }}/.tools/bin/helm'
+      - '{{ helm_binary }}'
       - get
       - manifest
       - '{{ helm_release_name }}'
@@ -122,19 +120,9 @@
     helm_workloads: '{{ helm_installed_manifest.stdout | from_yaml_all | select("mapping") | selectattr("kind",
       "in", ["Deployment", "StatefulSet", "DaemonSet"]) | list }}'
   no_log: '{{ helm_private | default(false) | bool }}'
-- name: Cache images requested by the new chart workloads
-  ansible.builtin.include_tasks: preload_pod_images.yml
 - name: Wait for the chart's actual workload controllers
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - rollout
-      - status
-      - '{{ item.kind | lower }}/{{ item.metadata.name }}'
-      - --namespace
-      - '{{ item.metadata.namespace | default(helm_namespace) }}'
-      - --timeout=600s
+  ansible.builtin.include_tasks: helm_workload.yml
   loop: '{{ helm_workloads }}'
   loop_control:
-    label: '{{ item.kind }}/{{ item.metadata.name }}'
-  changed_when: false
+    loop_var: helm_workload
+    label: '{{ helm_workload.kind }}/{{ helm_workload.metadata.name }}'

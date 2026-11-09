@@ -1,0 +1,97 @@
+---
+- name: Check CLI policy authoring without retaining generated files
+  delegate_to: localhost
+  become: false
+  block:
+    - name: Create an isolated controller policy test directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: kyverno-practice-
+      register: kyverno_cli_directory
+    - name: Write the policy and its positive and negative resources
+      ansible.builtin.copy:
+        dest: '{{ kyverno_cli_directory.path }}/{{ item.name }}'
+        mode: '0600'
+        content: '{{ item.definition | to_nice_yaml }}'
+      loop:
+        - name: policy.yaml
+          definition:
+            apiVersion: kyverno.io/v1
+            kind: ClusterPolicy
+            metadata: {name: require-training}
+            spec:
+              validationFailureAction: Enforce
+              background: false
+              rules:
+                - name: training-label
+                  match:
+                    any:
+                      - resources:
+                          kinds: [ConfigMap]
+                  validate:
+                    message: A training label is required.
+                    pattern:
+                      metadata:
+                        labels:
+                          training: enabled
+        - name: allowed.yaml
+          definition:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: allowed
+              namespace: default
+              labels: {training: enabled}
+        - name: denied.yaml
+          definition:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: denied
+              namespace: default
+        - name: kyverno-test.yaml
+          definition:
+            apiVersion: cli.kyverno.io/v1alpha1
+            kind: Test
+            metadata: {name: training-policy}
+            policies: [policy.yaml]
+            resources: [allowed.yaml, denied.yaml]
+            results:
+              - policy: require-training
+                rule: training-label
+                resources: [allowed]
+                kind: ConfigMap
+                result: pass
+              - policy: require-training
+                rule: training-label
+                resources: [denied]
+                kind: ConfigMap
+                result: fail
+      loop_control:
+        label: '{{ item.name }}'
+    - name: Require the policy test's positive and negative expectations to pass
+      ansible.builtin.command:
+        argv: ['{{ kyverno_binary }}', test, '{{ kyverno_cli_directory.path }}', --require-tests]
+      changed_when: false
+    - name: Evaluate the compliant resource with CLI apply
+      ansible.builtin.command:
+        argv: ['{{ kyverno_binary }}', apply, '{{ kyverno_cli_directory.path }}/policy.yaml', --resource, '{{ kyverno_cli_directory.path }}/allowed.yaml']
+      changed_when: false
+    - name: Require CLI apply to reject the noncompliant resource
+      ansible.builtin.command:
+        argv: ['{{ kyverno_binary }}', apply, '{{ kyverno_cli_directory.path }}/policy.yaml', --resource, '{{ kyverno_cli_directory.path }}/denied.yaml']
+      register: kyverno_cli_denial
+      changed_when: false
+      failed_when: "kyverno_cli_denial.rc != 1 or 'fail: 1' not in kyverno_cli_denial.stdout"
+    - name: Query the compliant resource with JMESPath
+      ansible.builtin.command:
+        argv: ['{{ kyverno_binary }}', jp, query, --unquoted, --input, '{{ kyverno_cli_directory.path }}/allowed.yaml', metadata.labels.training]
+      register: kyverno_cli_query
+      changed_when: false
+      failed_when: kyverno_cli_query.rc != 0 or kyverno_cli_query.stdout_lines | last | trim != 'enabled'
+  always:
+    - name: Remove only the generated controller policy fixtures
+      ansible.builtin.file:
+        path: '{{ kyverno_cli_directory.path }}'
+        state: absent
+      when: kyverno_cli_directory.path is defined

@@ -1,5 +1,5 @@
 ---
-- name: Prepare the isolated LFCS Linux administration guest
+- name: Prepare the isolated Linux certification guest
   hosts: linux_hosts
   become: true
   vars_files:
@@ -9,15 +9,17 @@
       ansible.builtin.assert:
         that:
           - ansible_facts.os_family == 'RedHat'
-          - ansible_facts.selinux.status == 'enabled'
-          - ansible_facts.selinux.mode == 'enforcing'
         fail_msg: Use the dedicated AlmaLinux inventory and Vagrant guest for SELinux exercises.
+    - name: Read SELinux enforcement directly before installing Python administration bindings
+      ansible.builtin.command: getenforce
+      register: lfcs_enforcement
+      changed_when: false
+      failed_when: lfcs_enforcement.stdout != 'Enforcing'
     - name: Install Linux administration and curriculum tools
       ansible.builtin.dnf:
         name:
           - acl
           - at
-          - autofs
           - bind-utils
           - chrony
           - cronie
@@ -28,29 +30,33 @@
           - httpd
           - iproute
           - iputils
-          - iscsi-initiator-utils
           - jq
-          - libvirt-client
-          - libvirt-daemon-driver-qemu
           - lsof
           - lvm2
           - man-db
-          - nfs-utils
           - nftables
           - openssh-clients
           - openssl
           - podman
           - policycoreutils-python-utils
           - procps-ng
+          - python3-libselinux
           - rsync
           - sos
-          - sssd-ldap
           - sysstat
           - tar
           - tcpdump
           - vim-enhanced
           - xfsprogs
         state: present
+    - name: Install advanced administration tools only for LFCS
+      ansible.builtin.dnf:
+        name: [autofs, iscsi-initiator-utils, libvirt-client, libvirt-daemon-driver-qemu, nfs-utils, sssd-ldap]
+        state: present
+      when: certification == 'lfcs'
+    - name: Refresh Linux facts after installing the SELinux Python bindings
+      ansible.builtin.setup:
+        gather_subset: [min]
     - name: Read the current timezone
       ansible.builtin.command: timedatectl show --property=Timezone --value
       register: lfcs_timezone
@@ -67,13 +73,13 @@
       loop: [chronyd, firewalld, crond, atd]
     - name: Create the dedicated practice content directory
       ansible.builtin.file:
-        path: '{{ lfcs_lab_root }}/www'
+        path: '{{ linux_lab_root }}/www'
         state: directory
         mode: '0755'
     - name: Provide content for Linux service and SELinux exercises
       ansible.builtin.copy:
         content: "lfcs-http-selinux-ready\n"
-        dest: '{{ lfcs_lab_root }}/www/index.html'
+        dest: '{{ linux_lab_root }}/www/index.html'
         mode: '0644'
     - name: Read persistent SELinux file mappings
       ansible.builtin.command: semanage fcontext -l -C
@@ -81,11 +87,11 @@
       changed_when: false
     - name: Persist the web content security label
       ansible.builtin.command:
-        argv: [semanage, fcontext, -a, -t, httpd_sys_content_t, '{{ lfcs_lab_root }}/www(/.*)?']
-      when: lfcs_lab_root ~ '/www(/.*)?' not in lfcs_fcontext.stdout
+        argv: [semanage, fcontext, -a, -t, httpd_sys_content_t, '{{ linux_lab_root }}/www(/.*)?']
+      when: linux_lab_root ~ '/www(/.*)?' not in lfcs_fcontext.stdout
       changed_when: true
     - name: Apply the persisted SELinux labels
-      ansible.builtin.command: restorecon -Rv {{ lfcs_lab_root }}/www
+      ansible.builtin.command: restorecon -Rv {{ linux_lab_root }}/www
       register: lfcs_relabel
       changed_when: lfcs_relabel.stdout | length > 0
     - name: Read local SELinux port mappings
@@ -93,18 +99,18 @@
       register: lfcs_ports
       changed_when: false
     - name: Label the dedicated HTTP practice port
-      ansible.builtin.command: semanage port -a -t http_port_t -p tcp {{ lfcs_http_port }}
-      when: lfcs_http_port | string not in lfcs_ports.stdout
+      ansible.builtin.command: semanage port -a -t http_port_t -p tcp {{ linux_http_port }}
+      when: linux_http_port | string not in lfcs_ports.stdout
       changed_when: true
     - name: Configure the practice HTTP virtual host
       ansible.builtin.copy:
         dest: /etc/httpd/conf.d/lfcs-lab.conf
         mode: '0644'
         content: |
-          Listen {{ lfcs_http_port }}
-          <VirtualHost *:{{ lfcs_http_port }}>
-            DocumentRoot "{{ lfcs_lab_root }}/www"
-            <Directory "{{ lfcs_lab_root }}/www">
+          Listen {{ linux_http_port }}
+          <VirtualHost *:{{ linux_http_port }}>
+            DocumentRoot "{{ linux_lab_root }}/www"
+            <Directory "{{ linux_lab_root }}/www">
               Require all granted
             </Directory>
           </VirtualHost>
@@ -115,7 +121,7 @@
       changed_when: "'ALREADY_ENABLED' not in lfcs_ssh_firewall.stderr"
       notify: Reload LFCS firewall
     - name: Permit the dedicated HTTP practice port
-      ansible.builtin.command: firewall-cmd --permanent --add-port={{ lfcs_http_port }}/tcp
+      ansible.builtin.command: firewall-cmd --permanent --add-port={{ linux_http_port }}/tcp
       register: lfcs_http_firewall
       changed_when: "'ALREADY_ENABLED' not in lfcs_http_firewall.stderr"
       notify: Reload LFCS firewall

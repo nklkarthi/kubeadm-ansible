@@ -1,0 +1,58 @@
+---
+- name: Retrieve a verified release asset without copying GitHub credentials to guests
+  delegate_to: localhost
+  become: false
+  throttle: 1
+  block:
+    - name: Read the cached asset's digest
+      ansible.builtin.stat:
+        path: '{{ controller_download_path }}'
+        checksum_algorithm: '{{ download_spec.checksum.split(":")[0] }}'
+      register: controller_github_cached_asset
+    - name: Fetch and verify only a missing or invalid release asset
+      when: not controller_github_cached_asset.stat.exists or controller_github_cached_asset.stat.checksum != download_spec.checksum.split(':')[1]
+      block:
+        - name: Reserve a private temporary download beside the cache destination
+          ansible.builtin.tempfile:
+            state: file
+            path: '{{ controller_download_path | dirname }}'
+            suffix: .partial
+          register: controller_github_partial
+        - name: Retrieve the exact asset through the GitHub CLI
+          ansible.builtin.command:
+            argv:
+              - gh
+              - release
+              - download
+              - '{{ download_spec.url.split("/")[7] }}'
+              - --repo
+              - '{{ download_spec.url.split("/")[3:5] | join("/") }}'
+              - --pattern
+              - '{{ download_spec.url | urlsplit("path") | basename }}'
+              - --output
+              - '{{ controller_github_partial.path }}'
+              - --clobber
+          changed_when: true
+          register: controller_github_asset_download
+          until: controller_github_asset_download is succeeded
+          retries: 3
+          delay: 5
+        - name: Hash the downloaded asset before publishing it to the cache
+          ansible.builtin.stat:
+            path: '{{ controller_github_partial.path }}'
+            checksum_algorithm: '{{ download_spec.checksum.split(":")[0] }}'
+          register: controller_github_asset_digest
+        - name: Reject an asset that differs from the pinned upstream digest
+          ansible.builtin.assert:
+            that: controller_github_asset_digest.stat.checksum == download_spec.checksum.split(':')[1]
+            fail_msg: The GitHub release asset failed checksum verification; it will not be transferred to a guest.
+        - name: Atomically publish the verified asset to the controller cache
+          ansible.builtin.command:
+            argv: [mv, -f, --, '{{ controller_github_partial.path }}', '{{ controller_download_path }}']
+          changed_when: true
+      always:
+        - name: Remove the partial download after success or failure
+          ansible.builtin.file:
+            path: '{{ controller_github_partial.path }}'
+            state: absent
+          when: controller_github_partial.path is defined

@@ -43,7 +43,7 @@
         download_spec:
           url: https://github.com/google/gvisor/releases/download/release-{{ gvisor_version }}/gvisor-{{ gvisor_arch
             }}.tar.bz2
-          checksum: sha512:https://github.com/google/gvisor/releases/download/release-{{ gvisor_version }}/SHA512SUMS
+          checksum: '{{ gvisor_archive_checksums[gvisor_arch] }}'
           dest: /opt/gvisor/{{ gvisor_version }}/gvisor-{{ gvisor_arch }}.tar.bz2
           mode: '0644'
     - name: Extract runtime, shim and required sidecar binaries together

@@ -7,3 +7,8 @@ certification_addons:
 download_via_controller: true
 controller_image_cache: true
 lab_time_from_controller: true
+manual_study_topics:
+  - Instrument an application with the OpenTelemetry API and SDK and configure resource attributes
+  - Propagate trace context and baggage across service calls and compare sampling strategies
+  - Configure metric instruments, aggregation and temporality and correlate logs with spans
+  - Change Collector transformations, scaling and error handling and debug schema compatibility

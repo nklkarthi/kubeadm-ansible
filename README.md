@@ -6,13 +6,23 @@ home inventory or a separate Pluralsight inventory while travelling.
 ## Requirements
 
 - Controller: macOS or WSL, Python 3.12–3.14, Ansible, and `kubectl`.
-- Guests: Ubuntu 22.04 or newer, unique hostnames/MACs, SSH access, and sudo.
-- Home VMs: Ubuntu 24.04 LTS, 2 CPUs and 4 GB RAM per node.
+- Kubernetes guests: Ubuntu 22.04 or newer, unique hostnames/MACs, SSH access, and sudo.
+- Home VM defaults: Ubuntu 24.04 LTS, 2 CPUs and 4 GB RAM per Kubernetes node.
 - Guest addresses must be stable and reachable from each other and the controller.
 - Pod and service networks must not overlap the guest networks.
-- The controller-tools playbook prepares pinned Helm and registry clients when needed.
+- Homebrew on the controller manages Helm, crane, Vagrant and selected certification CLIs.
+- The controller-tools playbook installs missing tools and verifies their tested version pins.
+- Optional: sign in with `gh auth login` on the controller to use authenticated,
+  checksummed GitHub release downloads. GitHub credentials stay on the controller.
 - Home VM management uses Vagrant and Homebrew, with native Hyper-V on Windows
   or VirtualBox on macOS.
+
+[Kubeadm's minimum](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#before-you-begin)
+is 2 GB RAM per machine and 2 CPUs for each control plane. The home defaults
+provide additional room for certification workloads; 4 GB is not a kubeadm
+requirement. Workers keep 2 CPUs as a lab choice. Review workload requests,
+available memory, memory pressure and eviction events before reducing VM RAM.
+The dedicated LFCS and LFCA guests use 2 CPUs and 2 GB each without Kubernetes.
 
 Install the controller tools in a virtual environment:
 
@@ -28,6 +38,7 @@ Ubuntu controllers need the matching `python3.14-venv` package for the standard
 ## Repository layout
 
 - `setup/kube_cluster.yml`: base-cluster entry point.
+- `setup/fresh_certification.yml`: replace local VMs, then install and test one certification.
 - `Vagrantfile`, `setup/hosts/vagrant.yml`: local VM definitions and lifecycle.
 - `setup/cluster/`: bootstrap, CNI, credentials, and cluster verification.
 - `setup/addons/`: opt-in applications and certification tools.
@@ -42,12 +53,11 @@ Ubuntu controllers need the matching `python3.14-venv` package for the standard
 
 ### Home lab
 
-Edit `setup/inventory`. The default groups are `vbox_hosts`, `vbox_master`, and
-`vbox_workers`. The account is `vboxuser`; the timezone is `Asia/Singapore`.
+Edit `setup/inventory`. Use the `cluster_nodes`, `control_plane`, and
+`worker_nodes` groups. The account is `vboxuser`; the timezone is `Asia/Singapore`.
 Vagrant provisions the account with the private SSH identity generated under
 `artifacts/vagrant/`; the inventory uses that identity for Ansible.
-The canonical `cluster_nodes`, `control_plane`, and `worker_nodes` groups map
-to these home groups; the cloud inventory maps them to its own hosts.
+The cloud inventory maps the same role groups to the Pluralsight servers.
 
 Connect from the repository root in WSL or macOS with the shared lab key:
 
@@ -64,7 +74,7 @@ for managed SSH access.
 
 ```bash
 ansible-playbook setup/hosts/vagrant.yml
-ansible vbox_hosts -m ansible.builtin.ping
+ansible cluster_nodes -m ansible.builtin.ping
 ansible-playbook setup/kube_cluster.yml
 ```
 
@@ -76,7 +86,8 @@ until selected explicitly.
 `scripts/vagrant.sh` installs Vagrant through Homebrew when necessary. On WSL,
 it uses native Hyper-V and stages the Vagrantfile and provider state under
 `%USERPROFILE%\Vagrant\kubeadm-ansible`. The shared Ansible private key stays in
-WSL. VM disks stay on Windows. Hyper-V uses DHCP for first boot, then persists the
+WSL. Vagrant's extracted Linux runtime is shared inside its Homebrew package.
+VM disks stay on Windows. Hyper-V uses DHCP for first boot, then persists the
 inventory address, gateway and DNS for subsequent boots. Reserve those static
 addresses outside the router's DHCP pool. macOS uses VirtualBox and defaults to the `en0`
 bridge; override `VAGRANT_LAB_BRIDGE` for a different adapter.
@@ -98,6 +109,12 @@ one administrator session, use PowerShell with this checkout's WSL path:
 
 Adjust the distribution, Linux user and checkout path on another controller.
 If the script reports `restart-required`, restart Windows and repeat it.
+
+For a clean certification lab, add `-Certifications ckad` to the helper command.
+It deletes the previous managed lab VMs and their writable disks, creates new
+guests and installs only the selected certification environment. A comma-separated
+list runs profiles sequentially and stops on failure. See
+[certification execution](docs/certifications.md) for the inventory and profile choices.
 
 ```bash
 ansible-playbook setup/hosts/vagrant.yml -e vagrant_state=status

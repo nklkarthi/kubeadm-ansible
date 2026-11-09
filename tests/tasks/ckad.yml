@@ -91,6 +91,9 @@
   ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://web
   register: ckad_updated_response
   changed_when: false
+  until: ckad_updated_response.rc == 0 and ckad_updated_response.stdout | trim == 'updated-application'
+  retries: 12
+  delay: 2
 - name: Require the new application response
   ansible.builtin.assert:
     that: ckad_updated_response.stdout | trim == 'updated-application'
@@ -104,6 +107,9 @@
   ansible.builtin.command: kubectl exec -n {{ test_namespace }} deployment/web -- wget -qO- -T 15 http://web
   register: ckad_rollback_response
   changed_when: false
+  until: ckad_rollback_response.rc == 0 and ckad_rollback_response.stdout | trim == 'cloud-native-lab'
+  retries: 12
+  delay: 2
 - name: Require the restored application response
   ansible.builtin.assert:
     that: ckad_rollback_response.stdout | trim == 'cloud-native-lab'

@@ -89,7 +89,7 @@
   delay: 3
 - name: Verify the Cilium CLI reports a healthy cluster
   ansible.builtin.command:
-    argv: ['{{ repository_root }}/.tools/bin/cilium', --kubeconfig, '{{ controller_kubeconfig }}', status, --wait, --wait-duration=3m]
+    argv: ['{{ cilium_binary }}', --kubeconfig, '{{ controller_kubeconfig }}', status, --wait, --wait-duration=3m]
   delegate_to: localhost
   become: false
   changed_when: false
@@ -112,7 +112,7 @@
       sleep 1
     done
     test -n "$port"
-    {{ (repository_root ~ '/.tools/bin/hubble') | quote }} observe --server "127.0.0.1:$port" --last 100 --namespace {{ test_namespace | quote }} --output json
+    {{ hubble_binary | quote }} observe --server "127.0.0.1:$port" --last 100 --namespace {{ test_namespace | quote }} --output json
   args:
     executable: /bin/bash
   delegate_to: localhost

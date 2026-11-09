@@ -12,7 +12,7 @@
           - ansible_facts.processor_vcpus | int >= 2
     - name: Verify the practice HTTP service from the controller
       ansible.builtin.uri:
-        url: 'http://{{ ansible_host | default(inventory_hostname) }}:{{ lfcs_http_port }}/'
+        url: 'http://{{ ansible_host | default(inventory_hostname) }}:{{ linux_http_port }}/'
         return_content: true
       delegate_to: localhost
       become: false
@@ -29,21 +29,21 @@
         - name: Create a disposable SELinux test file
           ansible.builtin.copy:
             content: 'selinux-access-restored'
-            dest: '{{ lfcs_lab_root }}/www/selinux-test.txt'
+            dest: '{{ linux_lab_root }}/www/selinux-test.txt'
             mode: '0644'
         - name: Deliberately assign a label the HTTP daemon cannot read
-          ansible.builtin.command: chcon -t user_home_t {{ lfcs_lab_root }}/www/selinux-test.txt
+          ansible.builtin.command: chcon -t user_home_t {{ linux_lab_root }}/www/selinux-test.txt
           changed_when: true
         - name: Require actual SELinux denial despite readable Unix permissions
           ansible.builtin.uri:
-            url: 'http://127.0.0.1:{{ lfcs_http_port }}/selinux-test.txt'
+            url: 'http://127.0.0.1:{{ linux_http_port }}/selinux-test.txt'
             status_code: 403
         - name: Restore the persisted file context
-          ansible.builtin.command: restorecon -v {{ lfcs_lab_root }}/www/selinux-test.txt
+          ansible.builtin.command: restorecon -v {{ linux_lab_root }}/www/selinux-test.txt
           changed_when: true
         - name: Verify access returns after correcting the security label
           ansible.builtin.uri:
-            url: 'http://127.0.0.1:{{ lfcs_http_port }}/selinux-test.txt'
+            url: 'http://127.0.0.1:{{ linux_http_port }}/selinux-test.txt'
             return_content: true
           register: lfcs_selinux_recovered
         - name: Require recovered content
@@ -53,7 +53,7 @@
       always:
         - name: Remove only the SELinux test content
           ansible.builtin.file:
-            path: '{{ lfcs_lab_root }}/www/selinux-test.txt'
+            path: '{{ linux_lab_root }}/www/selinux-test.txt'
             state: absent
     - name: Exercise LVM on a disposable sparse loop device with guaranteed cleanup
       ansible.builtin.shell: |
@@ -120,8 +120,11 @@
       loop:
         - [chronyc, tracking]
         - [podman, info, --format, '{{ "{{.Host.Security.selinuxEnabled}}" }}']
-        - [virsh, --version]
       changed_when: false
+    - name: Verify the LFCS virtualization CLI
+      ansible.builtin.command: virsh --version
+      changed_when: false
+      when: certification == 'lfcs'
     - name: Create the controller verification directory
       ansible.builtin.file:
         path: '{{ repository_root }}/artifacts/certification-results'
@@ -131,11 +134,11 @@
       become: false
     - name: Save the completed Linux checks and their exact scope
       ansible.builtin.copy:
-        dest: '{{ repository_root }}/artifacts/certification-results/lfcs.json'
+        dest: '{{ repository_root }}/artifacts/certification-results/{{ certification }}.json'
         mode: '0600'
-        content: '{{ {"certification": "lfcs", "status": "passed", "verified_at_utc": now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
+        content: '{{ {"certification": certification, "status": "passed", "verified_at_utc": now(utc=true, fmt="%Y-%m-%dT%H:%M:%SZ"),
           "distribution": ansible_facts.distribution, "release": ansible_facts.distribution_version,
-          "scope": "automated Linux environment checks", "checks": ["SELinux enforcement denial and recovery", "controller-to-guest HTTP and firewall",
+          "vm_identities": hostvars.localhost.fresh_vm_identities | default({}), "scope": "automated Linux environment checks", "checks": ["SELinux enforcement denial and recovery", "controller-to-guest HTTP and firewall",
           "LVM filesystem persistence and growth", "unprivileged ACL deny/allow/revoke", "time service and administration tools"],
           "manual_study_topics": manual_study_topics | default([])} | to_nice_json }}'
       delegate_to: localhost

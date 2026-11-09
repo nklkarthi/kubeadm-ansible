@@ -37,7 +37,7 @@
           cert_image_path={{ cached_image_archive | quote }}
           cert_image_partial="${cert_image_path}.partial"
           trap 'rm -f "$cert_image_partial"' EXIT
-          {{ (repository_root ~ '/.tools/bin/crane') | quote }} pull --platform {{ cached_image_platform | quote }} {{ image_request.image | quote }} "$cert_image_partial"
+          {{ registry_binary | quote }} pull --platform {{ cached_image_platform | quote }} {{ image_request.image | quote }} "$cert_image_partial"
           mv "$cert_image_partial" "$cert_image_path"
         creates: "{{ cached_image_archive }}"
       throttle: 1

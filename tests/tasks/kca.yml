@@ -64,12 +64,14 @@
       - kyverno_denied_config.rc != 0
       - "'The training policy denies blocked-config' in kyverno_denied_config.stderr"
 - name: Verify the selected policy CLI is installed
-  ansible.builtin.command: "{{ repository_root }}/.tools/bin/kyverno version"
+  ansible.builtin.command: "{{ kyverno_binary }} version"
   delegate_to: localhost
   become: false
   register: kyverno_cli_version
   changed_when: false
   failed_when: tool_versions.kyverno | regex_replace('^v', '') not in kyverno_cli_version.stdout
+- name: Exercise policy evaluation before admission
+  ansible.builtin.include_tasks: kyverno_cli.yml
 - name: Record verified policy behavior
   ansible.builtin.set_fact:
     kyverno_completed_checks:
@@ -77,6 +79,8 @@
       - CEL validation rejects a deliberately forbidden resource
       - an allowed resource is admitted successfully
       - the matching Kyverno CLI is available on the controller
+      - Kyverno CLI apply and test distinguish allowed and denied resources
+      - Kyverno CLI jp reads the expected resource attribute
 - name: Append the verified policy checks
   ansible.builtin.set_fact:
     certification_completed_checks: '{{ certification_completed_checks | default([]) + kyverno_completed_checks }}'

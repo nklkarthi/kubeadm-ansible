@@ -13,6 +13,7 @@ tool_versions:
   rancher: 2.15.3
   gvisor: '20261102.0'
   falco: 0.45.2
+  falco_rules: 5.2.0
   gitea: 28.3.0
   bash_it: v3.2.0
   ingress_nginx: v1.15.1
@@ -41,6 +42,16 @@ manifest_checksums:
   argocd: sha256:7be23ca7d9ca3d3074dee8332f1ca92a933b990cee7c9cf22cf3843ee8c2913e
   workflows: sha256:d25ba490170e35002b746878233d1310c3fad2f648735e85fa8671366a29dee8
   rollouts: sha256:b8280994791eaee7eb91c8b84450efcc6e0292fca5aafc18c1b0ebc5d18dbefe
+istio_archive_checksums:
+  amd64: sha256:956421eb4934c10029622b6cd96442c904548d12eadbe874fb1d1a38d5d58ccc
+  arm64: sha256:746985d0fd0347efde7e971888344c86d520f5cf86c538e8faa325f3d246bf55
+gvisor_archive_checksums:
+  x86_64: sha256:6f6b1a8f0f4665a403238135167d0d990bfaeaff5544abf68f5e0d822b35484a
+  aarch64: sha256:909c95f245a46000d3bb0d5285f07dde23597056e7c3a4aab758b218e95bdab0
+falco_rule_checksums:
+  falco_rules.yaml: sha256:30a1a60263ab97650c851011468da03b17fc0096a7cfa3b6686eba5de73b865b
+  falco-incubating_rules.yaml: sha256:47bf87041e2f39ca336e7acf1ae4e6183771a92e81031f367d01f2b49cabe1ac
+  falco-sandbox_rules.yaml: sha256:f05ad34f07c43930932ea6dd84c08a37bc8e5ba9f88901ca091ff1b52b3f33d3
 lab_nodeports:
   argocd_http: 30080
   argocd_https: 30443
@@ -64,8 +75,21 @@ lab_nodeports:
 cluster_hosts: cluster_nodes
 control_plane_hosts: control_plane
 worker_hosts: worker_nodes
+vagrant_managed_nodes: [master, worker-01, worker-02, ha-01, ha-02, mesh-01, lfcs, lfca]
+cilium_lab_mesh_clusters:
+  home:
+    ips: [192.168.101.32, 192.168.101.34]
+    port: 32379
+  mesh:
+    ips: [192.168.101.39]
+    port: 32379
 lab_access_host: '{{ hostvars[groups[control_plane_hosts][0]].ansible_host | default(groups[control_plane_hosts][0]) }}'
 repository_root: '{{ ansible_config_file | dirname }}'
+helm_binary: '{{ hostvars.localhost.controller_binaries.helm | default("helm") }}'
+registry_binary: '{{ hostvars.localhost.controller_binaries.crane | default("crane") }}'
+kyverno_binary: '{{ hostvars.localhost.controller_binaries.kyverno | default("kyverno") }}'
+cilium_binary: '{{ hostvars.localhost.controller_binaries.cilium | default("cilium") }}'
+hubble_binary: '{{ hostvars.localhost.controller_binaries.hubble | default("hubble") }}'
 sandbox_image: registry.k8s.io/pause:3.10.2
 helm_chart_sources:
   cilium:

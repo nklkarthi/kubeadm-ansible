@@ -1,0 +1,14 @@
+---
+- name: Cache images for workloads scheduled after their dependencies became ready
+  ansible.builtin.include_tasks: preload_pod_images.yml
+- name: Wait for this chart workload to become ready
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - '{{ helm_workload.kind | lower }}/{{ helm_workload.metadata.name }}'
+      - --namespace
+      - '{{ helm_workload.metadata.namespace | default(helm_namespace) }}'
+      - --timeout=600s
+  changed_when: false

@@ -7,3 +7,8 @@ certification_addons:
 download_via_controller: true
 controller_image_cache: true
 lab_time_from_controller: true
+manual_study_topics:
+  - Generate a Backstage project, install dependencies, compile TypeScript and build its container image
+  - Develop React and Material UI components and compare frontend and backend plugins
+  - Register catalog locations, use annotations and troubleshoot failed entity ingestion
+  - Configure production authentication, integrations and persistent database storage

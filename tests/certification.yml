@@ -12,7 +12,7 @@
         that:
           - certification is defined
           - certification in ['kcna', 'kcsa', 'cka', 'ckad', 'cks', 'pca', 'ica', 'cca', 'capa', 'cgoa', 'cba',
-            'otca', 'kca', 'cnpa', 'cnpe', 'lfcs']
+            'otca', 'kca', 'cnpa', 'cnpe']
     - name: Read the identity of the cluster under test
       ansible.builtin.command: kubectl get namespace kube-system -o jsonpath={.metadata.uid}
       register: certification_cluster_uid
@@ -32,6 +32,16 @@
           changed_when: true
         - name: Execute the certification-specific checks
           ansible.builtin.include_tasks: tasks/{{ certification }}.yml
+        - name: Require nodes to remain free of memory pressure after the exercises
+          ansible.builtin.command: kubectl wait nodes --all --for=condition=MemoryPressure=false --timeout=60s
+          changed_when: false
+        - name: Read available guest memory while the exercise workloads still exist
+          ansible.builtin.command:
+            argv: [awk, '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2} END {printf "{\"total_kib\":%d,\"available_kib\":%d}\n", total, available}', /proc/meminfo]
+          loop: '{{ groups[cluster_hosts] }}'
+          delegate_to: '{{ item }}'
+          register: certification_guest_memory
+          changed_when: false
         - name: Create the private controller test-report directory
           ansible.builtin.file:
             path: '{{ repository_root }}/artifacts/certification-results'
@@ -52,8 +62,10 @@
           ''cluster_uid'': certification_cluster_uid.stdout,
           ''nodes'': (certification_nodes.stdout | from_json)["items"] | map(attribute="metadata.name") | list,
           ''kubernetes_versions'': (certification_nodes.stdout | from_json)["items"] | map(attribute="status.nodeInfo.kubeletVersion") | unique | list,
-          ''scope'': ''automated lab
-          checks'', ''checks'': certification_completed_checks, ''manual_study_topics'': manual_study_topics
+          ''vm_identities'': hostvars.localhost.fresh_vm_identities | default({}), ''scope'': ''automated lab
+          checks'', ''memory_snapshot_kib'': dict(certification_guest_memory.results | map(attribute="item") |
+          zip(certification_guest_memory.results | map(attribute="stdout") | map("from_json"))),
+          ''checks'': certification_completed_checks, ''manual_study_topics'': manual_study_topics
           | default([])} | to_nice_json }}'
       delegate_to: localhost
       become: false

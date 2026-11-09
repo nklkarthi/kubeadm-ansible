@@ -10,10 +10,13 @@ param(
     [ValidatePattern('^(setup/inventory|inventories/[a-zA-Z0-9_.-]+\.(ini|example))$')]
     [string]$Inventory = 'setup/inventory',
     [ValidatePattern('^setup/[a-zA-Z0-9_/-]+\.yml$')]
-    [string]$LabPlaybook
+    [string]$LabPlaybook,
+    [ValidateScript({ @($_ -split ',' | Where-Object { $_ -notin @('kcna','kcsa','cka','ckad','cks','pca','ica','cca','capa','cgoa','cba','otca','kca','cnpa','cnpe','lfcs','lfca') }).Count -eq 0 })]
+    [string]$Certifications
 )
 $ErrorActionPreference = 'Stop'
 $PSStyle.OutputRendering = 'PlainText'
+if ($Certifications -and $LabPlaybook) { throw 'Choose Certifications or a single LabPlaybook.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -25,6 +28,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
                         '-LinuxUser', ('"' + $LinuxUser + '"'), '-LabRepository', ('"' + $LabRepository + '"'),
                         '-Inventory', ('"' + $Inventory + '"'))
         if ($LabPlaybook) { $arguments += @('-LabPlaybook', ('"' + $LabPlaybook + '"')) }
+        if ($Certifications) { $arguments += @('-Certifications', ('"' + $Certifications + '"')) }
     }
     $process = Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     exit $process.ExitCode
@@ -76,16 +80,37 @@ try {
         $ansible = $LabRepository.TrimEnd('/') + '/.venv/bin/ansible-playbook'
         $wslPath = & wsl.exe --distribution $WslDistribution --user $LinuxUser --exec /usr/bin/printenv PATH
         if ($LASTEXITCODE -ne 0) { throw 'Unable to read the WSL controller PATH.' }
-        $controllerPath = $LabRepository.TrimEnd('/') + '/.tools/bin:/home/linuxbrew/.linuxbrew/bin:' + ($wslPath -join '').Trim()
-        $playbooks = if ($LabPlaybook) { @($LabPlaybook) } else { @('setup/hosts/vagrant.yml', 'tests/local_vms.yml', 'setup/kube_cluster.yml') }
-        foreach ($playbook in $playbooks) {
-            $playbookLog = Join-Path $reportDirectory ((Split-Path $playbook -Leaf) + '.log')
-            & wsl.exe --distribution $WslDistribution --user $LinuxUser --cd $LabRepository --exec /usr/bin/env `
-                "PATH=$controllerPath" ANSIBLE_LOCAL_TEMP=/tmp/ansible-local PYTHONUNBUFFERED=1 $ansible $playbook -i $Inventory `
-                -e vagrant_provider=hyperv -e controller_image_cache=true -e download_via_controller=true 2>&1 |
-                Tee-Object -FilePath $playbookLog
-            if ($LASTEXITCODE -ne 0) { throw "Lab playbook $playbook failed with exit $LASTEXITCODE" }
+        $controllerPath = '/home/linuxbrew/.linuxbrew/bin:' + ($wslPath -join '').Trim()
+        $runs = if ($Certifications) {
+            foreach ($certification in $Certifications.Split(',')) {
+                $selectedInventory = switch ($certification) {
+                    'lfcs' { 'inventories/lfcs.ini' }
+                    'lfca' { 'inventories/lfca.ini' }
+                    'cca'  { 'inventories/cca.ini' }
+                    default { 'setup/inventory' }
+                }
+                [pscustomobject]@{Playbook='setup/fresh_certification.yml'; Inventory=$selectedInventory; Certification=$certification}
+            }
+        } else {
+            $playbooks = if ($LabPlaybook) { @($LabPlaybook) } else { @('setup/hosts/vagrant.yml', 'tests/local_vms.yml', 'setup/kube_cluster.yml') }
+            foreach ($playbook in $playbooks) { [pscustomobject]@{Playbook=$playbook; Inventory=$Inventory; Certification=$null} }
         }
+        $completedCertifications = @()
+        foreach ($run in $runs) {
+            $logName = if ($run.Certification) { $run.Certification + '-fresh.log' } else { (Split-Path $run.Playbook -Leaf) + '.log' }
+            $playbookLog = Join-Path $reportDirectory $logName
+            @{Status='running'; Certification=$run.Certification; Playbook=$run.Playbook; CompletedCertifications=$completedCertifications} |
+                ConvertTo-Json | Set-Content $reportFile
+            $runArguments = @('--distribution', $WslDistribution, '--user', $LinuxUser, '--cd', $LabRepository, '--exec', '/usr/bin/env',
+                              "PATH=$controllerPath", 'ANSIBLE_LOCAL_TEMP=/tmp/ansible-local', 'PYTHONUNBUFFERED=1', $ansible,
+                              $run.Playbook, '-i', $run.Inventory, '-e', 'vagrant_provider=hyperv', '-e', 'controller_image_cache=true',
+                              '-e', 'download_via_controller=true')
+            if ($run.Certification) { $runArguments += @('-e', ('@profiles/certifications/' + $run.Certification + '.yml')) }
+            & wsl.exe @runArguments 2>&1 | Tee-Object -FilePath $playbookLog
+            if ($LASTEXITCODE -ne 0) { throw "Lab playbook $($run.Playbook) for $($run.Certification) failed with exit $LASTEXITCODE; see $playbookLog" }
+            if ($run.Certification) { $completedCertifications += $run.Certification }
+        }
+        @{Status='passed'; CompletedCertifications=$completedCertifications} | ConvertTo-Json | Set-Content $reportFile
     }
 } catch {
     @{Status='failed'; Error=$_.Exception.Message} | ConvertTo-Json | Set-Content $reportFile

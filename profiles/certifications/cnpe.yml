@@ -17,3 +17,8 @@ certification_addons:
 download_via_controller: true
 controller_image_cache: true
 lab_time_from_controller: true
+manual_study_topics:
+  - Design platform tenancy, golden paths and application APIs with explicit access boundaries
+  - Operate multi-environment GitOps delivery and recover from failed changes and infrastructure loss
+  - Define SLOs, troubleshoot telemetry and evaluate capacity, cost and operational tradeoffs
+  - Practice secret management, supply-chain verification and platform governance

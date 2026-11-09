@@ -6,6 +6,7 @@ exercise you are working on. Do not install every stack on the home VMs.
 The [Golden Kubestronaut program](https://www.cncf.io/training/kubestronaut/)
 currently includes 15 CNCF certifications plus LFCS, giving 16 in total.
 Backstage is **CBA**, rather than BCA; **KCA** is Kyverno.
+LFCA is an additional Linux Foundation certification supported by a separate profile.
 
 ## Base cluster
 
@@ -32,7 +33,37 @@ See [compatibility](compatibility.md) before choosing a profile.
 
 ## Select the certification
 
-Select one profile from the repository root. The profile builds the base, installs
+For a completely fresh local environment, select one profile from the repository
+root using the VM-replacement entry point:
+
+```bash
+ansible-playbook -i setup/inventory setup/fresh_certification.yml \
+  -e @profiles/certifications/ckad.yml
+```
+
+This deletes the previous managed certification VMs and their writable disks,
+creates clean guests from the cached OS image, verifies their new VM identities
+and CPU stability, and then installs the selected environment. Only one
+certification's VMs remain. Controller tools and immutable download caches are
+shared; installed guest packages, workloads and practice data are recreated.
+
+On Windows, use an administrator session through the Hyper-V helper:
+
+```powershell
+& '\\wsl.localhost\Ubuntu\home\nklkarthi\github.com\nklkarthi\kubeadm-ansible\scripts\hyperv_setup.ps1' `
+  -StartLab -WslDistribution Ubuntu -LinuxUser nklkarthi `
+  -LabRepository /home/nklkarthi/github.com/nklkarthi/kubeadm-ansible `
+  -Certifications ckad
+```
+
+Use a comma-separated list such as `-Certifications ckad,kca,cba` to test several
+environments sequentially. Each entry replaces the preceding environment; the
+batch stops at its first failure. The helper selects the dedicated CCA, LFCS or
+LFCA inventory automatically. CKA HA is opt-in.
+
+To reconcile an existing environment without replacing its VMs, the guest setup
+entry point remains available. For Pluralsight, allocate a new provider lab and
+use this entry point with its inventory. The profile builds the base, installs
 its selected components in dependency order, and runs its functional checks:
 
 ```bash
@@ -63,6 +94,7 @@ rather than installing whichever release happens to be newest that day.
 | CNPA — Cloud Native Platform Engineering Associate | Argo CD → Backstage | Developer portal, self-service, GitOps delivery, platform concepts and governance. |
 | CNPE — Certified Cloud Native Platform Engineer | Argo CD → monitoring → Istio → storage → Traefik → Workflows → Rollouts → Collector → Kyverno → Crossplane → Backstage | Platform APIs, delivery, self-service, operations, observability, security and policy. Uses the compatible Kubernetes 1.36 profile. |
 | LFCS — Linux Foundation Certified System Administrator | Dedicated AlmaLinux guest; no Kubernetes | SELinux, users/ACLs, services, time, packages, networking, LVM/filesystems, containers, libvirt and recovery. |
+| LFCA — Linux Foundation Certified IT Associate | Dedicated AlmaLinux guest; no Kubernetes | Linux and system administration fundamentals, networking, Git, containers, security, cloud models and IT project management. |
 
 Automated checks exercise specific behavior and record their scope in ignored
 `artifacts/certification-results/` files. They do not replace the study and
@@ -94,7 +126,8 @@ main VMs, then select the next certification profile with `rebuild_lab=true`.
 
 Use `inventories/lfcs.ini` with `setup/hosts/linux_vms.yml` to create the optional
 2 CPU, 2 GB guest. On Windows, pass that inventory and playbook to the same
-administrator Hyper-V helper. Once the guest is running:
+administrator Hyper-V helper. This stops the three main Kubernetes VMs while
+the Linux-only guest is selected. Once the guest is running:
 
 ```bash
 ansible-playbook -i inventories/lfcs.ini setup/certification_lab.yml \
@@ -179,6 +212,47 @@ ansible-playbook setup/addons/certification_addons.yml -e install_kube_bench=tru
 Installing a tool prepares the lab; it does not complete its certification
 exercises or prove coverage of the full curriculum.
 
+### Backstage development
+
+The CBA profile provides a running portal, catalog and software template.
+The [CBA curriculum](https://training.linuxfoundation.org/certification/certified-backstage-associate-cba/)
+also requires local development, TypeScript, React, Material UI and plugin
+customization. Use a separate application directory outside this repository
+for those exercises. The Backstage 1.55.2 release uses app generator 0.9.2 and
+supports Node.js 22 or 24:
+
+```bash
+brew install node@24 corepack
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+npx --yes @backstage/create-app@0.9.2
+# Enter the generated application directory, then use its selected Yarn version:
+corepack yarn install
+corepack yarn tsc
+corepack yarn build:backend
+corepack yarn start
+```
+
+Follow the [Backstage development guide](https://backstage.io/docs/getting-started/)
+to change a React component, add frontend and backend plugins, register a catalog
+location and build the application's container image. Keep generated bundles,
+`node_modules`, local credentials and container images outside Git. The portal's
+SQLite database and guest authentication are intended for disposable exercises;
+use persistent storage and an appropriate identity provider for production.
+
+### Telemetry and policy authoring
+
+After the OTCA profile's HTTP and SDK-generated gRPC checks, instrument a small
+application using the [OpenTelemetry language SDKs](https://opentelemetry.io/docs/languages/).
+Carry trace context and baggage across two calls, compare sampling decisions,
+correlate logs with spans, and change Collector transformations and error handling.
+These exercises cover API and SDK behavior beyond accepting OTLP payloads.
+
+For KCA, the checks exercise admission mutation, CEL denial and the controller's
+`kyverno apply`, `test` and `jp` commands. Continue with generation, image
+verification, background reports, policy exceptions, cleanup and metrics using
+the [Kyverno guides](https://kyverno.io/docs/). Compare traditional policy types
+with CEL policies before attempting an upgrade or high availability exercise.
+
 ## Resources and cleanup
 
 Keep the base cluster and one exercise stack active at a time. Measure VM RAM
@@ -212,6 +286,8 @@ checked independently of search-engine crawl dates.
 | [Golden Kubestronaut study guide](https://github.com/slauger/kubestronaut) | Study guides covering all 16 certifications | [7 April 2026](https://github.com/slauger/kubestronaut/commit/846b1cb39159f7fbb45f6197f7e5287a31258b40) |
 | [Golden Kubestronaut learning path](https://github.com/pmady/golden-kubestronaut-learning) | Certification chapters and study sequence | [4 January 2026](https://github.com/pmady/golden-kubestronaut-learning/commit/c0cdcca28b82bd6b7da2824479f4eb7a3d0583af) |
 | [CKA preparation guide](https://github.com/techiescamp/cka-certification-guide) | Administration, networking, storage, workloads, and troubleshooting exercises | [5 November 2026](https://github.com/techiescamp/cka-certification-guide/commit/3d2cbc90389e5dbd82ae0755bc9068ca16ae5cb5) |
+| [CKS preparation guide](https://github.com/techiescamp/cks-certification-guide) | Cluster and host hardening, runtime detection, policy and supply-chain exercises | [6 November 2026](https://github.com/techiescamp/cks-certification-guide/commit/f698b7fc215fa81a9b7d0ea35c14b4008b694a49) |
+| [CNPE practice platform](https://github.com/rbstp/cnpe-exam-prep) | Platform architecture, delivery, self-service APIs, observability and security, with per-layer exercises | [17 September 2026](https://github.com/rbstp/cnpe-exam-prep/commit/a1fcb7e6cb1f78f08bf30cbecddbe24ab851d3a4) |
 | [CGOA study guide](https://github.com/otkd/CGOA-Study-Guide) | GitOps principles and reference material | [18 September 2026](https://github.com/otkd/CGOA-Study-Guide/commit/34a62fdea7c5bc8827c47e9783265ff42384098b) |
 | [CAPA study guide](https://github.com/msahihi/CAPA-study-guide) | Argo CD, Workflows, Rollouts and Events domains and labs | [13 February 2026](https://github.com/msahihi/CAPA-study-guide/commit/f509a371f6fae23e769915c9e123e3b4b1fd18b3) |
 | [KCNA study guide](https://github.com/msahihi/KCNA-study-guide) | Kubernetes and cloud native fundamentals | [25 January 2026](https://github.com/msahihi/KCNA-study-guide/commit/8239cd9973c6c479f9833f4798cb7802e6f3aded) |

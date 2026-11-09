@@ -5,6 +5,10 @@ cni_plugin: cilium
 cilium_cluster_name: home
 cilium_cluster_id: 1
 cilium_bgp_enabled: true
+cilium_mesh_enabled: '{{ groups["mesh_hosts"] | default([]) | length > 0 }}'
+cilium_mesh_clusters: '{{ cilium_lab_mesh_clusters if cilium_mesh_enabled | bool else {} }}'
+additional_node_ips: '{{ ["192.168.101.39"] if cilium_mesh_enabled | bool else [] }}'
+additional_pod_network_cidrs: '{{ ["10.245.0.0/16"] if cilium_mesh_enabled | bool else [] }}'
 certification_addons: []
 download_via_controller: true
 controller_image_cache: true

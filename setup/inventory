@@ -1,7 +1,7 @@
 [vbox_hosts]
-192.168.101.32 node_ip=192.168.101.32 vbox_vm_name=kubeadm-master vagrant_name=master
-192.168.101.34 node_ip=192.168.101.34 vbox_vm_name=kubeadm-worker-01 vagrant_name=worker-01
-192.168.101.35 node_ip=192.168.101.35 vbox_vm_name=kubeadm-worker-02 vagrant_name=worker-02
+192.168.101.32 node_ip=192.168.101.32 vagrant_name=master
+192.168.101.34 node_ip=192.168.101.34 vagrant_name=worker-01
+192.168.101.35 node_ip=192.168.101.35 vagrant_name=worker-02
 
 [vbox_master]
 192.168.101.32

@@ -2,7 +2,7 @@
 
 Versions are pinned in [common.yml](../setup/vars/common.yml). A newer release of
 one component does not imply that it supports the newest Kubernetes minor.
-Update the pin and its Kubernetes range together when changing a release line.
+Update the pin, release checksum and Kubernetes range together when changing a release line.
 
 | Component | Pinned release | Kubernetes support used by these playbooks |
 | --- | --- | --- |
@@ -28,9 +28,11 @@ existing 1.37 cluster. Calico remains the default CNI for 1.37. Changing an exis
 cluster between Calico and Cilium requires a separate migration or rebuild.
 
 The controller toolchain uses Ansible Core 2.21.6 with Python 3.12–3.14 on macOS or
-WSL. Guests use their own Ubuntu Python interpreter. Helm must be available on the
-controller for the Cilium installer. Other Kubernetes operations run on the
-selected Ubuntu control plane with its explicit admin kubeconfig.
+WSL. Homebrew manages controller tools; the preparation playbook verifies their
+versions against the pins before using them. Guests use their own distribution's
+Python interpreter and APT or DNF packages. Kubernetes operations run on the
+selected Ubuntu control plane with its explicit admin kubeconfig. LFCS and LFCA
+use dedicated AlmaLinux 10.2 guests without Kubernetes.
 
 Istio demonstration add-ons are intended for exercises. Installing Jaeger does
 not configure an application tracing provider automatically. Configure Istio's

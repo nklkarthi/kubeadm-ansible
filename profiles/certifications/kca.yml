@@ -7,3 +7,8 @@ certification_addons:
 download_via_controller: true
 controller_image_cache: true
 lab_time_from_controller: true
+manual_study_topics:
+  - Write generation, image verification, JSON patch and precondition rules with API context
+  - Inspect background reports, PolicyExceptions, cleanup policies and controller metrics
+  - Exercise controller RBAC, high availability and a controlled Helm upgrade
+  - Compare traditional Kyverno policies with CEL policy types

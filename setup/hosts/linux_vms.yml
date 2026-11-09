@@ -1,7 +1,23 @@
 ---
+- name: Use the host's memory for one certification environment at a time
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Require the dedicated Vagrant Linux inventory
+      ansible.builtin.assert:
+        that:
+          - groups['linux_hosts'] | default([]) | length == 1
+          - hostvars[groups['linux_hosts'][0]].vagrant_name in ['lfcs', 'lfca']
+    - name: Stop the main Kubernetes VMs while the Linux-only guest is selected
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', halt, master, worker-01, worker-02]
+      changed_when: true
 - name: Provision the Linux certification VM only when selected
   import_playbook: vagrant.yml
   vars:
-    vagrant_nodes: [lfcs]
+    vagrant_nodes: '{{ groups["linux_hosts"] | map("extract", hostvars, "vagrant_name") | list }}'
 - name: Check the Linux VM's CPU and network stability
   import_playbook: ../../tests/local_vms.yml

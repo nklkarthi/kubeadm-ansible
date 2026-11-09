@@ -1,0 +1,82 @@
+---
+- name: Bootstrap the independent Cilium cluster with a shared certificate authority
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  vars:
+    mesh_local_config: '{{ lookup("ansible.builtin.env", "HOME") }}/.kube/config'
+    mesh_main_context: vbox-kubeadm
+    mesh_remote_context: vbox-mesh-kubeadm
+  tasks:
+    - name: Require the dedicated CCA topology
+      ansible.builtin.assert:
+        that:
+          - certification == 'cca'
+          - groups['mesh_hosts'] | default([]) | length == 1
+          - cilium_cluster_id | int == 1
+          - cilium_mesh_enabled | bool
+    - name: Bootstrap only the second cluster's Kubernetes control plane before installing its CNI
+      ansible.builtin.command:
+        argv:
+          - '{{ ansible_playbook_python | dirname }}/ansible-playbook'
+          - -i
+          - '{{ repository_root }}/inventories/mesh.ini'
+          - '{{ repository_root }}/setup/kube_cluster.yml'
+          - -e
+          - '@{{ repository_root }}/profiles/cilium-mesh.yml'
+          - -e
+          - cni_plugin=none
+        chdir: '{{ repository_root }}'
+      changed_when: true
+    - name: Read the main cluster's Cilium CA without logging private material
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, '{{ mesh_local_config }}', --context, '{{ mesh_main_context }}', get, secret, cilium-ca, -n, kube-system, -o, json]
+      register: mesh_shared_ca
+      changed_when: false
+      no_log: true
+    - name: Inspect any existing Cilium CA in the second cluster
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, '{{ mesh_local_config }}', --context, '{{ mesh_remote_context }}', get, secret, cilium-ca, -n, kube-system, --ignore-not-found, -o, json]
+      register: mesh_existing_ca
+      changed_when: false
+      no_log: true
+    - name: Refuse an implicit replacement of another cluster's Cilium CA
+      ansible.builtin.assert:
+        that: mesh_existing_ca.stdout | length == 0 or (mesh_existing_ca.stdout | from_json).data == (mesh_shared_ca.stdout | from_json).data
+        fail_msg: Recreate the dedicated mesh guest before joining clusters with different Cilium CAs.
+      no_log: true
+    - name: Install the shared Cilium CA before generating the second cluster's serving certificates
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, '{{ mesh_local_config }}', --context, '{{ mesh_remote_context }}', apply, -f, '-']
+        stdin: '{{ {"apiVersion": "v1", "kind": "Secret", "type": (mesh_shared_ca.stdout | from_json).type,
+          "metadata": {"name": "cilium-ca", "namespace": "kube-system", "labels": {"app.kubernetes.io/managed-by": "Helm"},
+          "annotations": {"meta.helm.sh/release-name": "cilium", "meta.helm.sh/release-namespace": "kube-system"}},
+          "data": (mesh_shared_ca.stdout | from_json).data} | to_json }}'
+      when: mesh_existing_ca.stdout | length == 0
+      changed_when: true
+      no_log: true
+    - name: Install and verify the independently addressed Cilium cluster
+      ansible.builtin.command:
+        argv:
+          - '{{ ansible_playbook_python | dirname }}/ansible-playbook'
+          - -i
+          - '{{ repository_root }}/inventories/mesh.ini'
+          - '{{ repository_root }}/setup/kube_cluster.yml'
+          - -e
+          - '@{{ repository_root }}/profiles/cilium-mesh.yml'
+        chdir: '{{ repository_root }}'
+      changed_when: true
+    - name: Verify the declared ClusterMesh connections from both clusters
+      ansible.builtin.command:
+        argv: ['{{ cilium_binary }}', --kubeconfig, '{{ mesh_local_config }}', --context, '{{ item }}', clustermesh, status, --wait, --wait-duration=5m]
+      loop: ['{{ mesh_main_context }}', '{{ mesh_remote_context }}']
+      changed_when: false
+    - name: Select the home context for further practice
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, '{{ mesh_local_config }}', config, use-context, '{{ mesh_main_context }}']
+      changed_when: false
+    - name: Record that both independently verified clusters are available for the CCA checks
+      ansible.builtin.set_fact:
+        clustermesh_ready: true

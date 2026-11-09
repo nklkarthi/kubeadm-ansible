@@ -3,6 +3,10 @@ k8s_version: v1.36
 cni_plugin: cilium
 cilium_cluster_name: mesh
 cilium_cluster_id: 2
+cilium_mesh_enabled: true
+cilium_mesh_clusters: '{{ cilium_lab_mesh_clusters }}'
+additional_node_ips: [192.168.101.32, 192.168.101.34]
+additional_pod_network_cidrs: [10.244.0.0/16]
 allow_single_node: true
 pod_network_cidr: 10.245.0.0/16
 service_network_cidr: 10.112.0.0/16

@@ -1,0 +1,8 @@
+---
+certification: lfca
+linux_http_port: 18080
+linux_lab_root: /var/lib/kubeadm-certifications/lfca
+manual_study_topics:
+  - Cloud service models, shared responsibility, availability and budgeting
+  - IT project management, application architecture and open source licensing
+  - Disaster recovery planning, compliance and DevOps concepts

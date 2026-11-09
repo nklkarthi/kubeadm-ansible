@@ -1,0 +1,69 @@
+---
+- name: Select a completely fresh local VM environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Require the managed local VM inventory
+      ansible.builtin.assert:
+        that:
+          - groups['vbox_hosts'] | default([]) | length > 0
+          - hostvars[groups['vbox_hosts'][0]].lab_environment | default('') == 'vbox'
+          - groups['vbox_hosts'] | map('extract', hostvars, 'vagrant_name') | difference(vagrant_managed_nodes) | length == 0
+    - name: Select only the VM definitions in this certification's inventory
+      ansible.builtin.set_fact:
+        fresh_vagrant_nodes: '{{ groups["vbox_hosts"] | map("extract", hostvars, "vagrant_name") | list }}'
+        fresh_old_vm_identities: {}
+        fresh_vm_identities: {}
+    - name: Validate VM provisioning before removing the previous environment
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', validate]
+      changed_when: false
+    - name: Locate the managed VM state
+      ansible.builtin.command:
+        argv: ['{{ repository_root }}/scripts/vagrant.sh', --state-path]
+      register: fresh_state_path
+      changed_when: false
+    - name: Read the selected guests' previous identity files
+      ansible.builtin.stat:
+        path: '{{ fresh_state_path.stdout }}/machines/{{ item }}/{{ "hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox" }}/id'
+      loop: '{{ fresh_vagrant_nodes }}'
+      register: fresh_old_id_files
+    - name: Remember existing VM identities for the replacement check
+      ansible.builtin.set_fact:
+        fresh_old_vm_identities: '{{ fresh_old_vm_identities | combine({item.item: lookup("ansible.builtin.file", item.stat.path) | trim}) }}'
+      loop: '{{ fresh_old_id_files.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+      when: item.stat.exists
+- name: Remove the previous local certification VMs and their writable disks
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_state: absent
+    vagrant_nodes: '{{ vagrant_managed_nodes }}'
+- name: Create clean guests only for the selected certification
+  import_playbook: vagrant.yml
+  vars:
+    vagrant_state: started
+    vagrant_nodes: '{{ hostvars.localhost.fresh_vagrant_nodes }}'
+- name: Verify each replacement has a new VM identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Read the current managed VM identities
+      ansible.builtin.set_fact:
+        fresh_vm_identities: '{{ fresh_vm_identities | combine({item: lookup("ansible.builtin.file", repository_root ~ "/artifacts/vagrant/access/" ~ item ~ "-" ~ ("hyperv" if lookup("ansible.builtin.env", "WSL_DISTRO_NAME") | length > 0 else "virtualbox") ~ ".id") | trim}) }}'
+      loop: '{{ fresh_vagrant_nodes }}'
+    - name: Require fresh virtual machines instead of reusing the previous certification's guests
+      ansible.builtin.assert:
+        that:
+          - fresh_vm_identities[item] is match('^[0-9a-fA-F-]{36}$')
+          - fresh_vm_identities[item] != fresh_old_vm_identities.get(item, '')
+      loop: '{{ fresh_vagrant_nodes }}'
+- name: Verify the new guests' CPU and network stability
+  import_playbook: ../../tests/local_vms.yml

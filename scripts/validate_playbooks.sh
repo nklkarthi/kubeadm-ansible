@@ -11,9 +11,13 @@ for inventory in setup/inventory inventories/pluralsight.ini.example; do
 done
 for profile in profiles/certifications/*.yml; do
     inventory=setup/inventory
-    if [ "${profile##*/}" = lfcs.yml ]; then inventory=inventories/lfcs.ini; fi
+    case "${profile##*/}" in
+        lfcs.yml) inventory=inventories/lfcs.ini ;;
+        lfca.yml) inventory=inventories/lfca.ini ;;
+    esac
     ansible-playbook -i "$inventory" setup/certification_lab.yml -e "@$profile" --syntax-check >/dev/null
-    count=$((count + 1))
+    ansible-playbook -i "$inventory" setup/fresh_certification.yml -e "@$profile" --syntax-check >/dev/null
+    count=$((count + 2))
 done
 for playbook in setup/hosts/ha_lab.yml setup/hosts/ha_cleanup.yml; do
     ansible-playbook -i inventories/ha.ini "$playbook" --syntax-check >/dev/null

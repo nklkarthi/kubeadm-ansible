@@ -1,0 +1,16 @@
+---
+- name: Validate the Kubernetes inventory before replacing local VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require a Kubernetes topology
+      ansible.builtin.assert:
+        that:
+          - groups['control_plane'] | default([]) | length > 0
+          - groups['cluster_nodes'] | default([]) | length > 0
+          - groups['linux_hosts'] | default([]) | length == 0
+- name: Replace the managed guests with a clean local base environment
+  import_playbook: hosts/fresh_vms.yml
+- name: Install and verify the minimal functional Kubernetes cluster
+  import_playbook: kube_cluster.yml

@@ -81,6 +81,7 @@
     helm_chart_name: cilium
     helm_chart_version: '{{ cilium_version }}'
     helm_chart_source: '{{ helm_chart_sources.cilium }}'
+    helm_private: true
     helm_values:
       kubeProxyReplacement: false
       ipam:
@@ -102,13 +103,41 @@
           limits: {cpu: 500m, memory: 256Mi}
       hubble:
         enabled: true
+        tls:
+          auto:
+            method: helm
         relay:
           enabled: true
+          tolerations:
+            - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
           resources:
             requests: {cpu: 25m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
       bgpControlPlane:
         enabled: '{{ cilium_bgp_enabled | default(false) | bool }}'
+      clustermesh:
+        useAPIServer: '{{ cilium_mesh_enabled | default(false) | bool }}'
+        config:
+          enabled: '{{ cilium_mesh_enabled | default(false) | bool }}'
+          clusters: '{{ cilium_mesh_clusters | default({}) }}'
+        apiserver:
+          replicas: 1
+          tolerations:
+            - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+          service:
+            type: NodePort
+            nodePort: 32379
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          etcd:
+            resources:
+              requests: {cpu: 25m, memory: 64Mi}
+              limits: {cpu: 500m, memory: 256Mi}
+          kvstoremesh:
+            resources:
+              requests: {cpu: 25m, memory: 32Mi}
+              limits: {cpu: 250m, memory: 128Mi}
 - name: Collect nodes whose kubelet cgroup driver changed
   ansible.builtin.set_fact:
     cgroup_refreshed_nodes: []

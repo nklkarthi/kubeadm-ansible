@@ -17,6 +17,8 @@ nodes = {
   "ha-02" => { ip: "192.168.101.38", memory: 2048 },
   "mesh-01" => { ip: "192.168.101.39", memory: 2048 },
   "lfcs" => { ip: "192.168.101.40", memory: 2048, hostname: "lfcs-lab",
+              box: "almalinux/10", box_version: "10.2.20260914" },
+  "lfca" => { ip: "192.168.101.41", memory: 2048, hostname: "lfca-lab",
               box: "almalinux/10", box_version: "10.2.20260914" }
 }
 

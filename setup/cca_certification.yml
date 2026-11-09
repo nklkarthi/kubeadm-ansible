@@ -1,0 +1,9 @@
+---
+- name: Install the main Cilium cluster before the two-cluster checks
+  import_playbook: certification_lab.yml
+  vars:
+    run_certification_checks: false
+- name: Bootstrap the independent cluster and verify ClusterMesh
+  import_playbook: cluster/clustermesh.yml
+- name: Test the complete CCA environment only after both clusters are ready
+  import_playbook: ../tests/certification.yml

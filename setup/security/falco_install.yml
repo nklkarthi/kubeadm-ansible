@@ -82,10 +82,50 @@
         content: |
           engine:
             kind: {{ falco_driver }}
+          rules_files:
+            - /etc/falco/kubeadm-rules/falco_rules.yaml
+            - /etc/falco/kubeadm-rules/falco-incubating_rules.yaml
+            - /etc/falco/kubeadm-rules/falco-sandbox_rules.yaml
+            - /etc/falco/falco_rules.local.yaml
+            - /etc/falco/rules.d
       notify: Restart Falco
+    - name: Create the version-pinned rule directory
+      ansible.builtin.file:
+        path: /etc/falco/kubeadm-rules
+        state: directory
+        mode: '0755'
+    - name: Install matching stable, incubating and sandbox rules
+      ansible.builtin.include_tasks: ../tasks/download_file.yml
+      loop: '{{ falco_rule_checksums | dict2items }}'
+      loop_control:
+        label: '{{ item.key }}'
+      vars:
+        download_notify: [Restart Falco]
+        download_spec:
+          url: https://raw.githubusercontent.com/falcosecurity/rules/falco-rules-{{ tool_versions.falco_rules }}/rules/{{ item.key }}
+          checksum: '{{ item.value }}'
+          dest: /etc/falco/kubeadm-rules/{{ item.key }}
+          mode: '0644'
+    - name: Preserve existing custom rules or create an empty local override file
+      ansible.builtin.copy:
+        dest: /etc/falco/falco_rules.local.yaml
+        content: "[]\n"
+        force: false
+        mode: '0644'
+    - name: Validate the pinned rule sets together before restarting the detector
+      ansible.builtin.command:
+        argv:
+          - falco
+          - --validate
+          - /etc/falco/kubeadm-rules/falco_rules.yaml
+          - --validate
+          - /etc/falco/kubeadm-rules/falco-incubating_rules.yaml
+          - --validate
+          - /etc/falco/kubeadm-rules/falco-sandbox_rules.yaml
+      changed_when: false
     - name: Read installed Falco service units
       ansible.builtin.service_facts: {}
-    - name: Stop other installed Falco driver services
+    - name: Stop unused Falco drivers and the updater for unpinned rule sets
       ansible.builtin.systemd_service:
         name: '{{ item }}'
         state: stopped
@@ -94,6 +134,7 @@
         - falco-modern-bpf.service
         - falco-kmod.service
         - falco-bpf.service
+        - falcoctl-artifact-follow.service
       when:
         - item != falco_service
         - item in ansible_facts.services
