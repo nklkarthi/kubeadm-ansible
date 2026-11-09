@@ -1,0 +1,87 @@
+---
+- name: Refresh the selected control plane's controller credentials
+  ansible.builtin.include_tasks: controller_access.yml
+- name: Refresh the controller's selected Kubernetes context
+  ansible.builtin.include_tasks: install_local_kubeconfig.yml
+  vars:
+    fetched_kubeconfig: '{{ controller_kubeconfig }}'
+- name: Verify the refreshed controller context against the ready Kubernetes API
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, '{{ local_config_path }}', --context, '{{ local_context_name }}', --request-timeout=15s, get, --raw=/readyz]
+  delegate_to: localhost
+  become: false
+  register: lab_controller_api
+  changed_when: false
+  failed_when: lab_controller_api.rc != 0 or lab_controller_api.stdout | trim != 'ok'
+- name: Initialize this installation's access information
+  ansible.builtin.set_fact:
+    lab_ui_services: []
+    lab_ui_credentials: {}
+    lab_client_context: '{{ local_context_name }}'
+- name: Protect the controller access directory
+  ansible.builtin.file:
+    path: '{{ repository_root }}/artifacts/access'
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+- name: Initialize Argo CD authentication and its web interface
+  ansible.builtin.include_tasks: access/argocd.yml
+  when: "'argocd' in certification_addons | default([])"
+- name: Initialize monitoring interface credentials
+  ansible.builtin.include_tasks: access/monitoring.yml
+  when: "'monitoring' in certification_addons | default([])"
+- name: Initialize workflow interface access
+  ansible.builtin.include_tasks: access/workflows.yml
+  when: "'workflows' in certification_addons | default([])"
+- name: Initialize the mesh dashboard against the selected monitoring backend
+  ansible.builtin.include_tasks: access/istio.yml
+  when: "'istio' in certification_addons | default([]) and 'monitoring' in certification_addons | default([])"
+- name: Record the Backstage interface and guest sign-in method
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Backstage", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.backstage, "health_url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.backstage ~ "/.backstage/health/v1/readiness", "authentication": "Choose Guest on the sign-in page"}] }}'
+  when: "'backstage' in certification_addons | default([])"
+- name: Record the Hubble interface
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Hubble", "url": "http://" ~ lab_access_host ~ ":" ~ (lab_nodeports.hubble_ui | default(30098)), "health_url": "http://" ~ lab_access_host ~ ":" ~ (lab_nodeports.hubble_ui | default(30098)), "authentication": "Local lab interface"}] }}'
+  when: cni_plugin | default('calico') == 'cilium'
+- name: Record the Rollouts dashboard command
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Argo Rollouts", "url": "http://localhost:3100", "command": "kubectl argo rollouts dashboard --port 3100 -n default", "authentication": "Uses the current Kubernetes context"}] }}'
+  when: "'rollouts' in certification_addons | default([])"
+- name: Verify selected direct web interfaces from the controller
+  ansible.builtin.uri:
+    url: '{{ item.health_url }}'
+    ca_path: '{{ item.ca_path | default(omit) }}'
+    return_content: false
+    timeout: 15
+  delegate_to: localhost
+  become: false
+  loop: '{{ lab_ui_services | selectattr("health_url", "defined") | list }}'
+  loop_control:
+    label: '{{ item.name }}'
+  register: lab_ui_probe
+  until: lab_ui_probe.status == 200
+  retries: 12
+  delay: 5
+- name: Save active endpoints and client instructions
+  ansible.builtin.copy:
+    dest: '{{ repository_root }}/artifacts/access/current.yml'
+    content: '{{ {"certification": certification, "kubernetes_context": lab_client_context, "services": lab_ui_services, "credentials_file": repository_root ~ "/artifacts/access/credentials.yml"} | to_nice_yaml(sort_keys=false) }}'
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+- name: Save credentials privately for this active installation
+  ansible.builtin.copy:
+    dest: '{{ repository_root }}/artifacts/access/credentials.yml'
+    content: '{{ lab_ui_credentials | to_nice_yaml(sort_keys=false) }}'
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true
+- name: Show active UI endpoints without printing credentials
+  ansible.builtin.debug:
+    msg: '{{ item.name }}: {{ item.url }}{{ " — start with: " ~ item.command if item.command is defined else "" }}'
+  loop: '{{ lab_ui_services }}'
+  loop_control:
+    label: '{{ item.name }}'

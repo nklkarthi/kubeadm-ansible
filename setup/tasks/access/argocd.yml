@@ -1,0 +1,168 @@
+---
+- name: Select the owned Argo CD access paths
+  ansible.builtin.set_fact:
+    lab_argocd_server: '{{ lab_access_host }}:{{ lab_nodeports.argocd_https }}'
+    lab_argocd_context: '{{ lab_client_context }}-argocd'
+    lab_argocd_config_path: '{{ lookup("ansible.builtin.env", "XDG_CONFIG_HOME") | default(lookup("ansible.builtin.env", "HOME") ~ "/.config", true) }}/argocd/config'
+    lab_argocd_ca_path: '{{ repository_root }}/artifacts/access/argocd-server.crt'
+- name: Protect the owned server certificate directory
+  ansible.builtin.file:
+    path: /etc/kubernetes/addons/argocd-tls
+    state: directory
+    mode: '0700'
+- name: Inspect the owned server certificate
+  ansible.builtin.stat:
+    path: /etc/kubernetes/addons/argocd-tls/server.crt
+  register: lab_argocd_cert_stat
+- name: Check certificate lifetime
+  ansible.builtin.command: openssl x509 -in /etc/kubernetes/addons/argocd-tls/server.crt -checkend 604800 -noout
+  register: lab_argocd_cert_lifetime
+  changed_when: false
+  failed_when: false
+  when: lab_argocd_cert_stat.stat.exists
+- name: Check the certificate endpoint identity
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, /etc/kubernetes/addons/argocd-tls/server.crt, '{{ "-checkip" if lab_access_host is match("^[0-9.]+$") else "-checkhost" }}', '{{ lab_access_host }}', -noout]
+  register: lab_argocd_cert_identity
+  changed_when: false
+  failed_when: false
+  when: lab_argocd_cert_stat.stat.exists
+- name: Issue the owned lab certificate with the actual UI endpoint in its SANs
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -nodes
+      - -newkey
+      - rsa:2048
+      - -keyout
+      - /etc/kubernetes/addons/argocd-tls/server.key
+      - -out
+      - /etc/kubernetes/addons/argocd-tls/server.crt
+      - -days
+      - '90'
+      - -subj
+      - /CN=argocd-lab
+      - -addext
+      - 'subjectAltName={{ "IP:" if lab_access_host is match("^[0-9.]+$") else "DNS:" }}{{ lab_access_host }},DNS:localhost,IP:127.0.0.1,DNS:argocd-server,DNS:argocd-server.argocd.svc'
+  when: not lab_argocd_cert_stat.stat.exists or lab_argocd_cert_lifetime.rc | default(1) != 0 or lab_argocd_cert_identity.rc | default(1) != 0
+  changed_when: true
+  no_log: true
+- name: Restrict the owned server private key
+  ansible.builtin.file:
+    path: /etc/kubernetes/addons/argocd-tls/server.key
+    mode: '0600'
+- name: Read the owned server certificate and key
+  ansible.builtin.slurp:
+    src: '/etc/kubernetes/addons/argocd-tls/server.{{ item }}'
+  loop: [crt, key]
+  register: lab_argocd_tls
+  no_log: true
+- name: Reconcile the declared Argo CD server certificate
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_private: true
+    manifest_definition:
+      apiVersion: v1
+      kind: Secret
+      metadata: {name: argocd-server-tls, namespace: argocd}
+      type: kubernetes.io/tls
+      data:
+        tls.crt: '{{ lab_argocd_tls.results[0].content }}'
+        tls.key: '{{ lab_argocd_tls.results[1].content }}'
+- name: Fetch only the public server certificate for controller-side trust
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/addons/argocd-tls/server.crt
+    dest: '{{ lab_argocd_ca_path }}'
+    flat: true
+- name: Check whether the running server has loaded the declared certificate
+  ansible.builtin.uri:
+    url: 'https://{{ lab_argocd_server }}/healthz'
+    ca_path: '{{ lab_argocd_ca_path }}'
+    timeout: 10
+  delegate_to: localhost
+  become: false
+  register: lab_argocd_tls_probe
+  failed_when: false
+- name: Restart a server that has not loaded the declared TLS endpoint
+  ansible.builtin.command: kubectl rollout restart deployment/argocd-server -n argocd
+  when: lab_argocd_tls_probe.status != 200
+  changed_when: true
+- name: Require the server after loading its declared certificate
+  ansible.builtin.command: kubectl rollout status deployment/argocd-server -n argocd --timeout=300s
+  when: lab_argocd_tls_probe.status != 200
+  changed_when: false
+- name: Read the current initial administrator password
+  ansible.builtin.command: kubectl get secret argocd-initial-admin-secret -n argocd -o json
+  register: lab_argocd_initial_secret
+  changed_when: false
+  no_log: true
+- name: Authenticate against the certificate-pinned Argo CD API
+  ansible.builtin.uri:
+    url: 'https://{{ lab_argocd_server }}/api/v1/session'
+    method: POST
+    body_format: json
+    body:
+      username: admin
+      password: '{{ (lab_argocd_initial_secret.stdout | from_json).data.password | b64decode }}'
+    ca_path: '{{ lab_argocd_ca_path }}'
+    return_content: true
+    timeout: 20
+  delegate_to: localhost
+  become: false
+  register: lab_argocd_session
+  until: lab_argocd_session.status == 200 and lab_argocd_session.json.token is defined
+  retries: 12
+  delay: 5
+  no_log: true
+- name: Protect the controller Argo CD configuration directory
+  ansible.builtin.file:
+    path: '{{ lab_argocd_config_path | dirname }}'
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+- name: Inspect existing Argo CD contexts
+  ansible.builtin.stat:
+    path: '{{ lab_argocd_config_path }}'
+  delegate_to: localhost
+  become: false
+  register: lab_argocd_config_stat
+- name: Read existing Argo CD contexts privately
+  ansible.builtin.slurp:
+    src: '{{ lab_argocd_config_path }}'
+  delegate_to: localhost
+  become: false
+  register: lab_argocd_existing_config
+  when: lab_argocd_config_stat.stat.exists
+  no_log: true
+- name: Merge this lab's authenticated client context
+  ansible.builtin.set_fact:
+    lab_argocd_old_config: '{{ (lab_argocd_existing_config.content | b64decode | from_yaml | default({}, true)) if lab_argocd_config_stat.stat.exists else {} }}'
+  no_log: true
+- name: Install this lab context while preserving other Argo CD environments
+  ansible.builtin.copy:
+    dest: '{{ lab_argocd_config_path }}'
+    mode: '0600'
+    content: '{{ lab_argocd_old_config | combine({"current-context": lab_argocd_context, "contexts": (lab_argocd_old_config.contexts | default([], true) | rejectattr("name", "equalto", lab_argocd_context) | list) + [{"name": lab_argocd_context, "server": lab_argocd_server, "user": lab_argocd_context}], "servers": (lab_argocd_old_config.servers | default([], true) | rejectattr("server", "equalto", lab_argocd_server) | list) + [{"server": lab_argocd_server, "grpc-web": true, "certificate-authority-data": lab_argocd_tls.results[0].content}], "users": (lab_argocd_old_config.users | default([], true) | rejectattr("name", "equalto", lab_argocd_context) | list) + [{"name": lab_argocd_context, "auth-token": lab_argocd_session.json.token}]}) | to_nice_yaml(sort_keys=false) }}'
+  delegate_to: localhost
+  become: false
+  no_log: true
+- name: Verify the authenticated controller client against this installation
+  ansible.builtin.command:
+    argv: ['{{ hostvars.localhost.controller_binaries.argocd | default("argocd") }}', app, list, --config, '{{ lab_argocd_config_path }}', --argocd-context, '{{ lab_argocd_context }}', -o, json]
+  delegate_to: localhost
+  become: false
+  environment:
+    ARGOCD_SERVER: ''
+    ARGOCD_AUTH_TOKEN: ''
+  changed_when: false
+  no_log: true
+- name: Record the current web administrator credentials privately
+  ansible.builtin.set_fact:
+    lab_ui_credentials: '{{ lab_ui_credentials | combine({"argocd": {"username": "admin", "password": (lab_argocd_initial_secret.stdout | from_json).data.password | b64decode}}) }}'
+  no_log: true
+- name: Record the certificate-pinned Argo CD interface
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Argo CD", "url": "https://" ~ lab_argocd_server, "health_url": "https://" ~ lab_argocd_server, "ca_path": lab_argocd_ca_path, "credentials_key": "argocd", "cli_context": lab_argocd_context, "certificate": lab_argocd_ca_path}] }}'

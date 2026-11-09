@@ -117,6 +117,16 @@
     - name: Require the composite resource to report readiness
       ansible.builtin.command: kubectl wait practiceapps.{{ test_namespace }}.lab.example/requested-app -n {{ test_namespace }} --for=condition=Ready --timeout=180s
       changed_when: false
+    - name: Verify the controller-side Crossplane client can read the server version
+      ansible.builtin.command:
+        argv: ['{{ crossplane_binary | default("crossplane") }}', version]
+      delegate_to: localhost
+      become: false
+      environment:
+        KUBECONFIG: '{{ controller_kubeconfig | default(repository_root ~ "/artifacts/kubeconfig") }}'
+      register: crossplane_client_server
+      changed_when: false
+      failed_when: crossplane_client_server.rc != 0 or tool_versions.crossplane not in crossplane_client_server.stdout or (tool_versions.crossplane_cli | regex_replace('^v', '')) not in crossplane_client_server.stdout
   always:
     - name: Remove the test composite and its managed resource before its API
       ansible.builtin.command: kubectl delete practiceapps.{{ test_namespace }}.lab.example requested-app -n {{ test_namespace }} --ignore-not-found --wait=true --timeout=120s
@@ -131,4 +141,4 @@
       changed_when: true
 - name: Record the verified self-service API behavior
   ansible.builtin.set_fact:
-    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["a namespaced platform API validates application requests", "a composition function transforms the request into a native Kubernetes resource", "the platform request reports readiness after fulfillment"] }}'
+    certification_completed_checks: '{{ certification_completed_checks | default([]) + ["a namespaced platform API validates application requests", "a composition function transforms the request into a native Kubernetes resource", "the platform request reports readiness after fulfillment", "the controller-side Crossplane client reads its server version"] }}'

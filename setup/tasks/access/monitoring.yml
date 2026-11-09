@@ -1,0 +1,22 @@
+---
+- name: Read the current Grafana administrator credentials
+  ansible.builtin.command: kubectl get secret kube-prometheus-stack-grafana -n monitoring -o json
+  register: lab_grafana_secret
+  changed_when: false
+  no_log: true
+- name: Record the current Grafana credentials privately
+  ansible.builtin.set_fact:
+    lab_ui_credentials: '{{ lab_ui_credentials | combine({"grafana": {"username": (lab_grafana_secret.stdout | from_json).data["admin-user"] | b64decode, "password": (lab_grafana_secret.stdout | from_json).data["admin-password"] | b64decode}}) }}'
+  no_log: true
+- name: Verify the Grafana credentials against its authenticated API
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.grafana }}/api/user'
+    url_username: '{{ lab_ui_credentials.grafana.username }}'
+    url_password: '{{ lab_ui_credentials.grafana.password }}'
+    force_basic_auth: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+- name: Record the monitoring interfaces
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Grafana", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.grafana, "health_url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.grafana ~ "/api/health", "credentials_key": "grafana"}, {"name": "Prometheus", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.prometheus, "health_url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.prometheus ~ "/-/ready"}, {"name": "Alertmanager", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.alertmanager, "health_url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.alertmanager ~ "/-/ready"}] }}'

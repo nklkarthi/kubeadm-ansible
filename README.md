@@ -241,14 +241,53 @@ ansible-playbook setup/cluster/verify_cluster.yml
 ```
 
 Metrics-server's lab-only insecure kubelet TLS flag requires
-`-e metrics_server_insecure_tls=true`. Argo CD uses HTTPS by default; retrieving
-its initial admin secret is a separate `kubectl` operation. Rancher requires an
+`-e metrics_server_insecure_tls=true`. Certification setup refreshes the Kubernetes
+context and authenticates the Argo CD CLI against the current installation.
+Rancher requires an
 explicit `rancher_host` and `bootstrap_password`; use Ansible Vault for secrets.
 Gitea upgrades require a database backup and `allow_gitea_upgrade=true`.
 
 NodePorts are allocated centrally in `setup/vars/common.yml`. Istio uses 30088
 for HTTP and 30444 for HTTPS; Argo CD uses 30080 and 30443. The two monitoring
 options have distinct dashboard ports.
+
+After certification setup, read `artifacts/access/current.yml` for the active
+URLs and client context. Login details are written only to
+`artifacts/access/credentials.yml` (mode `0600`, ignored by Git). Fresh VM creation
+replaces these credentials; bookmarks use the same node address.
+
+| Interface | Home lab URL | Sign-in |
+| --- | --- | --- |
+| Argo CD | `https://192.168.101.32:30443` | `argocd` credentials entry |
+| Argo Workflows | `https://192.168.101.32:30100/workflows/argo` | Paste the `workflows.authorization` value; select namespace `argo` |
+| Grafana | `http://192.168.101.32:30086` | `grafana` credentials entry |
+| Prometheus | `http://192.168.101.32:30084` | Local lab access |
+| Alertmanager | `http://192.168.101.32:30081` | Local lab access |
+| Backstage | `http://192.168.101.32:30097` | Choose **Guest** |
+| Kiali, with Istio and monitoring | `http://192.168.101.32:30095/kiali` | Anonymous local lab access |
+| Hubble, with Cilium | `http://192.168.101.32:30098` | Local lab access |
+| Argo Rollouts | `http://localhost:3100` | Run `kubectl argo rollouts dashboard --port 3100 -n default` in WSL |
+
+Only interfaces selected by the certification profile are installed. Open their
+direct node URLs in the Windows browser; no WSL port-forward process is needed
+for NodePort services. Istio itself has no management UI: Kiali displays its
+mesh, while port `30088` serves configured application routes. Kiali uses the
+existing Prometheus installation.
+
+The Argo interfaces use a generated lab certificate with the node address in its
+SANs. The CLI pins the public certificate at
+`artifacts/access/argocd-server.crt`; a browser needs to trust this lab certificate.
+It changes when the VMs are recreated. Workflow UI tokens are requested for
+24 hours; refresh access without rebuilding the cluster with the same profile:
+
+```bash
+ansible-playbook setup/hosts/client_access.yml -e @profiles/certifications/cnpe.yml
+```
+
+Argo Workflows, Rollouts, Istio, Cilium, Kyverno and Crossplane clients use the
+selected Kubernetes context. The workflow UI identity can manage workflows in
+`argo`; choose `workflow-executor` as the workflow service account when submitting
+from that interface.
 
 ## Disk usage
 

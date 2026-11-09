@@ -3,6 +3,10 @@
   ansible.builtin.include_tasks: ../namespace.yml
   vars:
     addon_namespace: argo
+- name: Inspect whether workflow UI access has already supplied its server certificate
+  ansible.builtin.command: kubectl get secret argo-server-tls -n argo --ignore-not-found -o name
+  register: workflow_ui_certificate
+  changed_when: false
 - name: Install the pinned Argo workflows components
   ansible.builtin.include_tasks: ../download_apply.yml
   vars:
@@ -11,6 +15,13 @@
     manifest_name: workflows-{{ tool_versions.argo_workflows }}
     manifest_url: https://github.com/argoproj/argo-workflows/releases/download/{{ tool_versions.argo_workflows }}/install.yaml
     manifest_patches:
+      - kind: Service
+        name: argo-server
+        value:
+          spec:
+            type: NodePort
+            ports:
+              - {name: web, port: 2746, targetPort: 2746, nodePort: '{{ lab_nodeports.argo_workflows | default(30100) | int }}'}
       - kind: Deployment
         name: workflow-controller
         container_resources:
@@ -23,6 +34,9 @@
               memory: 512Mi
       - kind: Deployment
         name: argo-server
+        container_args:
+          argo-server:
+            add: '{{ ["--tls-certificate-secret-name=argo-server-tls"] if workflow_ui_certificate.stdout | length > 0 else [] }}'
         container_resources:
           argo-server:
             requests:

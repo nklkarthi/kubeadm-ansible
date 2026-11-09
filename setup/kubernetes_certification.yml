@@ -53,6 +53,8 @@
   when: '''monitoring'' in certification_addons | default([])'
 - name: Install only the selected syllabus-specific components
   import_playbook: addons/certification_stack.yml
+- name: Initialize clients and service access for the selected certification
+  import_playbook: hosts/client_access.yml
 - name: Test the selected certification environment
   import_playbook: ../tests/certification.yml
   when: run_certification_checks | default(true) | bool

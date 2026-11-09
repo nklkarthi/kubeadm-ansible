@@ -106,6 +106,21 @@
         tls:
           auto:
             method: helm
+        ui:
+          enabled: true
+          tolerations:
+            - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+          service:
+            type: NodePort
+            nodePort: '{{ lab_nodeports.hubble_ui | default(30098) | int }}'
+          frontend:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          backend:
+            resources:
+              requests: {cpu: 10m, memory: 32Mi}
+              limits: {cpu: 200m, memory: 128Mi}
         relay:
           enabled: true
           tolerations:

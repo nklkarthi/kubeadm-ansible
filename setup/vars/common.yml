@@ -79,6 +79,8 @@ lab_nodeports:
   traefik_https: 30490
   backstage: 30097
   otel_http: 30418
+  argo_workflows: 30100
+  hubble_ui: 30098
 cluster_hosts: cluster_nodes
 control_plane_hosts: control_plane
 worker_hosts: worker_nodes

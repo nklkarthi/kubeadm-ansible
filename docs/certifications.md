@@ -92,7 +92,7 @@ rather than installing whichever release happens to be newest that day.
 | OTCA — OpenTelemetry Certified Associate | OpenTelemetry Collector | OTLP receivers, processors, logs, metrics, traces, API/SDK instrumentation and telemetry debugging. |
 | KCA — Kyverno Certified Associate | Kyverno controllers and matching controller-side CLI | Mutation, validation, CEL policies, generation, image verification and policy testing. |
 | CNPA — Cloud Native Platform Engineering Associate | Argo CD → Backstage | Developer portal, self-service, GitOps delivery, platform concepts and governance. |
-| CNPE — Certified Cloud Native Platform Engineer | Argo CD → monitoring → Istio → storage → Traefik → Workflows → Rollouts → Collector → Kyverno → Crossplane → Backstage | Platform APIs, delivery, self-service, operations, observability, security and policy. Uses the compatible Kubernetes 1.36 profile. |
+| CNPE — Certified Cloud Native Platform Engineer | Argo CD → Istio → monitoring → storage → Traefik → Workflows → Rollouts → Collector → Kyverno → Crossplane → Backstage | Platform APIs, delivery, self-service, operations, observability, security and policy. Uses the compatible Kubernetes 1.36 profile. |
 | LFCS — Linux Foundation Certified System Administrator | Dedicated AlmaLinux guest; no Kubernetes | SELinux, users/ACLs, services, time, packages, networking, LVM/filesystems, containers, libvirt and recovery. |
 | LFCA — Linux Foundation Certified IT Associate | Dedicated AlmaLinux guest; no Kubernetes | Linux and system administration fundamentals, networking, Git, containers, security, cloud models and IT project management. |
 
@@ -261,6 +261,8 @@ with CEL policies before attempting an upgrade or high availability exercise.
 Run the clients from WSL or macOS, using the selected lab's kubeconfig. Profile
 setup installs only the clients required by its selected components. Installed
 clients can be shared between fresh labs; they run when invoked.
+See [service access](../README.md#optional-playbooks) for initialized logins,
+active UI endpoints and access refresh commands.
 
 | Selected component | Controller clients |
 | --- | --- |

@@ -1,0 +1,97 @@
+---
+- name: Read the version-matched Kiali source
+  ansible.builtin.include_tasks: ../download_file.yml
+  vars:
+    download_spec:
+      url: 'https://raw.githubusercontent.com/istio/istio/{{ istio_release | default(tool_versions.istio) }}/samples/addons/kiali.yaml'
+      dest: /etc/kubernetes/addons/kiali-ui.source.yaml
+- name: Load the pinned mesh dashboard resources
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/addons/kiali-ui.source.yaml
+  register: lab_kiali_source
+- name: Parse the dashboard source and its configuration
+  ansible.builtin.set_fact:
+    lab_kiali_objects: '{{ lab_kiali_source.content | b64decode | from_yaml_all | select("mapping") | list }}'
+- name: Select the dashboard configuration
+  ansible.builtin.set_fact:
+    lab_kiali_configuration: '{{ (lab_kiali_objects | selectattr("kind", "equalto", "ConfigMap") | selectattr("metadata.name", "equalto", "kiali") | first).data["config.yaml"] | from_yaml }}'
+- name: Point Kiali at the installed monitoring backend
+  ansible.builtin.set_fact:
+    lab_kiali_configuration: '{{ lab_kiali_configuration | combine({"external_services": {"prometheus": {"url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"}, "grafana": {"enabled": false}}}, recursive=true) }}'
+- name: Reconcile the mesh dashboard with the declared endpoint and resources
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    addon_namespace: istio-system
+    manifest_objects: '{{ lab_kiali_objects }}'
+    manifest_patches:
+      - kind: ConfigMap
+        name: kiali
+        value:
+          data:
+            config.yaml: '{{ lab_kiali_configuration | to_nice_yaml }}'
+      - kind: Service
+        name: kiali
+        value:
+          spec:
+            type: NodePort
+            ports:
+              - {name: http, port: 20001, targetPort: 20001, nodePort: '{{ lab_nodeports.istio_kiali | int }}'}
+      - kind: Deployment
+        name: kiali
+        value:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubeadm-lab/config-checksum: '{{ lab_kiali_configuration | to_json | hash("sha256") }}'
+        container_resources:
+          kiali:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+    manifest_definition: '{{ lookup("ansible.builtin.template", repository_root ~ "/setup/templates/manifest-list.json.j2") | from_json }}'
+- name: Reconcile mesh telemetry discovery for the existing Prometheus operator
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: istiod
+            namespace: monitoring
+            labels: {release: kube-prometheus-stack}
+          spec:
+            namespaceSelector: {matchNames: [istio-system]}
+            selector:
+              matchLabels: {app: istiod}
+            endpoints: [{port: http-monitoring, interval: 15s}]
+        - apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: istio-proxies
+            namespace: monitoring
+            labels: {release: kube-prometheus-stack}
+          spec:
+            namespaceSelector: {any: true}
+            selector:
+              matchExpressions:
+                - {key: service.istio.io/canonical-name, operator: Exists}
+            podMetricsEndpoints: [{port: http-envoy-prom, path: /stats/prometheus, interval: 15s}]
+- name: Require the mesh dashboard workload to be available
+  ansible.builtin.command: kubectl rollout status deployment/kiali -n istio-system --timeout=300s
+  changed_when: false
+- name: Verify the mesh dashboard can query the installed Prometheus backend
+  ansible.builtin.uri:
+    url: 'http://{{ lab_access_host }}:{{ lab_nodeports.istio_kiali }}/kiali/api/status'
+    timeout: 15
+  delegate_to: localhost
+  become: false
+  register: lab_kiali_backend
+  until: lab_kiali_backend.status == 200 and lab_kiali_backend.json.externalServices | default([]) | selectattr('name', 'equalto', 'Prometheus') | list | length > 0
+  retries: 12
+  delay: 5
+- name: Record the mesh dashboard and application gateway
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Kiali", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.istio_kiali ~ "/kiali", "health_url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.istio_kiali ~ "/kiali/", "authentication": "Anonymous local lab dashboard"}, {"name": "Istio application gateway", "url": "http://" ~ lab_access_host ~ ":" ~ lab_nodeports.istio_http, "usage": "Serves configured application Gateway and VirtualService routes"}] }}'

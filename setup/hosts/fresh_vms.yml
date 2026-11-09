@@ -43,6 +43,18 @@
   vars:
     vagrant_state: absent
     vagrant_nodes: '{{ vagrant_managed_nodes }}'
+- name: Remove access information belonging to the deleted installation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Remove only the managed UI endpoint and credential files
+      ansible.builtin.file:
+        path: '{{ repository_root }}/artifacts/access/{{ item }}'
+        state: absent
+      loop: [current.yml, credentials.yml, argocd-server.crt]
 - name: Create clean guests only for the selected certification
   import_playbook: vagrant.yml
   vars:

@@ -1,0 +1,12 @@
+---
+- name: Initialize controller clients and expose the selected lab interfaces
+  hosts: '{{ control_plane_hosts }}[0]'
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars_files:
+    - ../vars/common.yml
+  tasks:
+    - name: Configure access for this installation's selected clients and services
+      ansible.builtin.include_tasks: ../tasks/client_access.yml

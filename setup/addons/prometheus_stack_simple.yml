@@ -21,6 +21,34 @@
           - crd
           - applications.argoproj.io
       changed_when: false
+    - name: Prepare the monitoring namespace before its administrator secret
+      ansible.builtin.include_tasks: ../tasks/namespace.yml
+      vars:
+        addon_namespace: monitoring
+    - name: Inspect the installation's existing Grafana credentials
+      ansible.builtin.command: kubectl get secret kube-prometheus-stack-grafana -n monitoring --ignore-not-found -o name
+      register: monitoring_admin_secret
+      changed_when: false
+    - name: Create administrator credentials only for a new installation
+      when: monitoring_admin_secret.stdout | length == 0
+      block:
+        - name: Generate a private Grafana administrator password
+          ansible.builtin.command: openssl rand -hex 24
+          register: monitoring_admin_password
+          changed_when: false
+          no_log: true
+        - name: Store the installation's credentials independently of Helm rendering
+          ansible.builtin.include_tasks: ../tasks/apply_manifest.yml
+          vars:
+            manifest_private: true
+            manifest_definition:
+              apiVersion: v1
+              kind: Secret
+              metadata: {name: kube-prometheus-stack-grafana, namespace: monitoring}
+              type: Opaque
+              data:
+                admin-user: '{{ "admin" | b64encode }}'
+                admin-password: '{{ monitoring_admin_password.stdout | b64encode }}'
     - name: Reconcile the kube-prometheus-stack Argo CD application
       ansible.builtin.include_tasks: ../tasks/apply_manifest.yml
       vars:
@@ -39,6 +67,10 @@
               helm:
                 valuesObject:
                   grafana:
+                    admin:
+                      existingSecret: kube-prometheus-stack-grafana
+                      userKey: admin-user
+                      passwordKey: admin-password
                     sidecar:
                       resources:
                         requests: {cpu: 10m, memory: 16Mi}
@@ -95,6 +127,15 @@
                 - CreateNamespace=true
         manifest_private: false
       when: not ansible_check_mode
+    - name: Inspect previous chart ownership of the preserved administrator secret
+      ansible.builtin.command:
+        argv: [kubectl, get, secret, kube-prometheus-stack-grafana, -n, monitoring, '-o=jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}']
+      register: monitoring_secret_tracking
+      changed_when: false
+    - name: Transfer the existing administrator secret out of chart reconciliation
+      ansible.builtin.command: kubectl annotate secret kube-prometheus-stack-grafana -n monitoring argocd.argoproj.io/tracking-id-
+      when: monitoring_secret_tracking.stdout | length > 0
+      changed_when: true
     - name: Wait for kube-prometheus-stack to reconcile the selected chart revision
       ansible.builtin.command:
         argv:

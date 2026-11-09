@@ -1,0 +1,118 @@
+---
+- name: Provide the declared workflow UI certificate and lab identities
+  ansible.builtin.include_tasks: ../apply_manifest.yml
+  vars:
+    manifest_private: true
+    manifest_definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Secret
+          metadata: {name: argo-server-tls, namespace: argo}
+          type: kubernetes.io/tls
+          data:
+            tls.crt: '{{ lab_argocd_tls.results[0].content }}'
+            tls.key: '{{ lab_argocd_tls.results[1].content }}'
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata: {name: certification-ui, namespace: argo}
+          automountServiceAccountToken: false
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata: {name: workflow-executor, namespace: argo}
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata: {name: certification-ui, namespace: argo}
+          rules:
+            - apiGroups: [argoproj.io]
+              resources: [workflows, workflowtemplates, cronworkflows, workfloweventbindings]
+              verbs: [get, list, watch, create, update, patch, delete]
+            - apiGroups: ['']
+              resources: [pods, pods/log, events, configmaps, serviceaccounts]
+              verbs: [get, list, watch]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata: {name: certification-ui, namespace: argo}
+          roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: certification-ui}
+          subjects: [{kind: ServiceAccount, name: certification-ui, namespace: argo}]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata: {name: kubeadm-lab-workflow-ui}
+          rules:
+            - apiGroups: ['']
+              resources: [namespaces]
+              verbs: [get, list, watch]
+            - apiGroups: [argoproj.io]
+              resources: [clusterworkflowtemplates]
+              verbs: [get, list, watch]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata: {name: kubeadm-lab-workflow-ui}
+          roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubeadm-lab-workflow-ui}
+          subjects: [{kind: ServiceAccount, name: certification-ui, namespace: argo}]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata: {name: workflow-executor, namespace: argo}
+          rules:
+            - apiGroups: [argoproj.io]
+              resources: [workflowtaskresults]
+              verbs: [create, patch]
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata: {name: workflow-executor, namespace: argo}
+          roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: workflow-executor}
+          subjects: [{kind: ServiceAccount, name: workflow-executor, namespace: argo}]
+- name: Read the workflow server's configured arguments
+  ansible.builtin.command: kubectl get deployment argo-server -n argo -o json
+  register: lab_workflow_server
+  changed_when: false
+- name: Select the workflow server arguments with its declared TLS certificate
+  ansible.builtin.set_fact:
+    lab_workflow_server_args: '{{ ((lab_workflow_server.stdout | from_json).spec.template.spec.containers | selectattr("name", "equalto", "argo-server") | first).args }}'
+- name: Configure the workflow server to load its declared certificate
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - deployment/argo-server
+      - -n
+      - argo
+      - --type=strategic
+      - -p
+      - '{{ {"spec": {"template": {"spec": {"containers": [{"name": "argo-server", "args": lab_workflow_server_args + ["--tls-certificate-secret-name=argo-server-tls"]}]}}}} | to_json }}'
+  when: '"--tls-certificate-secret-name=argo-server-tls" not in lab_workflow_server_args'
+  changed_when: true
+- name: Reload an updated certificate when the server already selects its secret
+  ansible.builtin.command: kubectl rollout restart deployment/argo-server -n argo
+  changed_when: true
+  when: manifest_diff.rc == 1 and "--tls-certificate-secret-name=argo-server-tls" in lab_workflow_server_args
+- name: Require the workflow UI server after access configuration
+  ansible.builtin.command: kubectl rollout status deployment/argo-server -n argo --timeout=300s
+  changed_when: false
+- name: Issue a short-lived workflow UI token
+  ansible.builtin.command: kubectl create token certification-ui -n argo --duration=24h
+  register: lab_workflow_token
+  changed_when: false
+  no_log: true
+- name: Verify the workflow UI identity against its API
+  ansible.builtin.uri:
+    url: 'https://{{ lab_access_host }}:{{ lab_nodeports.argo_workflows | default(30100) }}/api/v1/workflows/argo'
+    headers:
+      Authorization: 'Bearer {{ lab_workflow_token.stdout }}'
+    ca_path: '{{ lab_argocd_ca_path }}'
+    timeout: 15
+  delegate_to: localhost
+  become: false
+  register: lab_workflow_api
+  until: lab_workflow_api.status == 200
+  retries: 12
+  delay: 5
+  no_log: true
+- name: Record the workflow UI token privately
+  ansible.builtin.set_fact:
+    lab_ui_credentials: '{{ lab_ui_credentials | combine({"workflows": {"authorization": "Bearer " ~ lab_workflow_token.stdout, "namespace": "argo", "executor_service_account": "workflow-executor", "requested_validity": "24h"}}) }}'
+  no_log: true
+- name: Record the workflow UI endpoint
+  ansible.builtin.set_fact:
+    lab_ui_services: '{{ lab_ui_services + [{"name": "Argo Workflows", "url": "https://" ~ lab_access_host ~ ":" ~ (lab_nodeports.argo_workflows | default(30100)) ~ "/workflows/argo", "health_url": "https://" ~ lab_access_host ~ ":" ~ (lab_nodeports.argo_workflows | default(30100)), "ca_path": lab_argocd_ca_path, "credentials_key": "workflows", "namespace": "argo"}] }}'
