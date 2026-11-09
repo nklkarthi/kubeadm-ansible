@@ -35,6 +35,12 @@ See [compatibility](compatibility.md) before choosing a profile.
 
 ## Select the certification
 
+### Create a fresh local lab
+
+The [README's WSL quick start](../README.md#create-a-fresh-lab-from-wsl)
+covers controller activation, Windows consent and the expected SSH and Kubernetes
+checks. Run the commands in the WSL terminal, from the repository directory.
+
 On WSL, create a completely fresh CKAD lab in this order:
 
 1. Open a WSL terminal in this repository and run `source .venv/bin/activate`.
@@ -45,6 +51,7 @@ On WSL, create a completely fresh CKAD lab in this order:
    launcher prepares the controller kubeconfig automatically.
 
 ```bash
+source .venv/bin/activate
 pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" -LabRepository "$PWD" -Certifications ckad
 ```
 
@@ -75,6 +82,8 @@ Use a comma-separated list such as `-Certifications ckad,kca,cba` to test severa
 environments sequentially. Each entry replaces the preceding environment; the
 batch stops at its first failure. The helper selects the dedicated CCA, LFCS or
 LFCA inventory automatically. CKA HA is opt-in.
+
+### Configure an existing lab
 
 To reconcile an existing environment without replacing its VMs, the guest setup
 entry point remains available. Its guests must already be running and reachable

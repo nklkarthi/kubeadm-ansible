@@ -105,25 +105,15 @@ define **how**, and tests verify the deployed environment.
 
 ## Run a certification lab
 
-Run commands from the repository directory with `.venv` activated. For an
-existing Kubernetes lab, select one profile, for example CAPA:
+### Create a fresh lab from WSL
 
-```bash
-ansible-playbook -i setup/inventory setup/certification_lab.yml \
-  -e @profiles/certifications/capa.yml
-```
+Run the following in **WSL Bash or Zsh**, from the directory containing this
+README. Use this workflow when the VMs do not exist, including after cleanup,
+or when you want to replace the previous certification environment.
 
-Use the same inventory and profile with `setup/validate_profile.yml` to check the
-selection before creating or configuring hosts. The shared entry point selects
-the two-cluster CCA workflow with `inventories/cca.ini`, or the CKA HA workflow
-with `inventories/ha.ini`. LFCS and LFCA require their dedicated Linux inventories.
-
-For a fresh local certification environment on macOS, use
-`setup/fresh_certification.yml` with the same inventory and profile. On WSL,
-create a fresh CKAD lab as follows:
-
-1. Open a WSL terminal in this repository and run `source .venv/bin/activate`.
-2. Run the command below. It opens the Windows administrator consent prompt
+1. Run the commands below. If `.venv` does not exist, complete the controller
+   installation under [Requirements](#requirements) first.
+2. The launcher opens the Windows administrator consent prompt
    required for Hyper-V VM creation and deletion.
 3. Select **Yes**. Leave the elevated Windows terminal open while it runs
    Ansible back in WSL to create the guests, install the selected certification
@@ -133,8 +123,20 @@ create a fresh CKAD lab as follows:
    `setup/certification_lab.yml` with the same profile.
 
 ```bash
+source .venv/bin/activate
 pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" -LabRepository "$PWD" -Certifications ckad
 ```
+
+After the launcher finishes successfully, check access from the same WSL terminal:
+
+```bash
+kubectl --context=vbox-kubeadm get nodes
+ansible -i setup/inventory cluster_nodes -m ansible.builtin.ping
+```
+
+For the default CKAD inventory, expect three `Ready` nodes and a successful
+`pong` from each guest. The final Ansible recap must show no failed or unreachable
+hosts.
 
 Replace `ckad` with another profile name to select that certification. The
 launcher selects its inventory and runs `setup/fresh_certification.yml`;
@@ -149,6 +151,23 @@ the targeted Linux workflow in the [Linux guide](docs/linux-certifications.md).
 Normal configuration runs use `setup/certification_lab.yml` and require running,
 SSH-accessible guests; they do not create or start VMs. After destroying the lab,
 use the fresh workflow first.
+
+### Configure or test an existing lab
+
+With the VMs running and reachable, use this command from the repository in WSL
+or macOS. It reconciles CKAD configuration and runs the functional checks:
+
+```bash
+source .venv/bin/activate
+ansible-playbook -i setup/inventory setup/certification_lab.yml -e @profiles/certifications/ckad.yml
+```
+
+Use the same inventory and profile with `setup/validate_profile.yml` to check the
+selection before creating or configuring hosts. The shared entry point selects
+the two-cluster CCA workflow with `inventories/cca.ini`, or the CKA HA workflow
+with `inventories/ha.ini`. LFCS and LFCA require their dedicated Linux inventories.
+For a fresh local environment on macOS, use `setup/fresh_certification.yml`
+with the matching inventory and profile.
 
 Fresh runs deliberately replace infrastructure. Existing-environment runs
 reconcile managed configuration. Their default verification creates and removes
