@@ -67,6 +67,11 @@ ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.34  # worker-01
 ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.35  # worker-02
 ```
 
+Run these commands on the controller; the private key stays there. Fresh
+certification runs replace the guests and their SSH host keys. Wait for the
+Vagrant playbook's SSH identity checks to finish before connecting manually;
+it refreshes the controller's trusted host keys through the managed connections.
+
 The VM must be running before SSH can connect. Windows home VMs appear in
 **Hyper-V Manager** with names beginning `kubeadm-`; macOS VirtualBox-provider
 VMs appear in **VirtualBox Manager**. Vagrant uses the same guest account and key

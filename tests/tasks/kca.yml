@@ -41,7 +41,7 @@
               - expression: object.metadata.name != 'blocked-config'
                 message: The training policy denies blocked-config.
 - name: Wait for policy admission readiness
-  ansible.builtin.command: kubectl wait namespacedvalidatingpolicy/protect-training-config -n {{ test_namespace }} --for=condition=Ready --timeout=180s
+  ansible.builtin.command: kubectl wait namespacedvalidatingpolicy/protect-training-config -n {{ test_namespace }} --for=jsonpath={.status.conditionStatus.ready}=true --timeout=180s
   changed_when: false
 - name: Create an allowed configuration through the admission webhooks
   ansible.builtin.command: kubectl create configmap allowed-config -n {{ test_namespace }} --from-literal=message=training
