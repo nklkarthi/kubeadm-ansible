@@ -1,7 +1,30 @@
 # kubeadm-ansible
 
-Create Ubuntu Kubernetes labs from a macOS or WSL Ansible controller. Use the
-home inventory or a separate Pluralsight inventory while travelling.
+Build certification learning environments with Ansible from WSL or macOS.
+Choose a certification profile to install its prerequisites, prepare its clients,
+and verify the resulting lab. Use local Vagrant VMs at home or the Pluralsight
+inventory while travelling.
+
+## Choose your certification
+
+Start with the [certification guide](docs/certifications.md): it lists every
+supported certification, its profile, installation order and practice scope.
+The [Linux guide](docs/linux-certifications.md) maps every LFCS syllabus objective
+to installed tools and practice material, and explains LFCA's knowledge-based study.
+Use the [practical lab guide](docs/practical-labs.md) for detailed LFCS, CKA, CKS,
+CNPE and CKAD task, verification, failure-recovery and cleanup workflows.
+All five are performance-based certifications that require hands-on practice.
+
+| Learning environment | Inventory | Profile | Guest OS |
+| --- | --- | --- | --- |
+| Kubernetes certification | `setup/inventory` | `profiles/certifications/CERT.yml` | Ubuntu 24.04 LTS |
+| LFCS administration | `inventories/lfcs.ini` | `profiles/certifications/lfcs.yml` | AlmaLinux 10.2 |
+| LFCA fundamentals | `inventories/lfca.ini` | `profiles/certifications/lfca.yml` | Ubuntu 24.04 LTS |
+
+Use this study cycle: **select a profile → create the lab → connect → practise
+the guide's exercises → verify → reset when a fresh environment is needed**.
+The automated checks verify the environment and representative workloads;
+they are not exam simulators or a substitute for completing the exercises.
 
 ## Requirements
 
@@ -54,18 +77,68 @@ between disposable labs and verified against the release pins. See the
 
 ## Repository layout
 
-- `setup/kube_cluster.yml`: base-cluster entry point.
-- `setup/fresh_cluster.yml`: replace local VMs and verify the minimal base cluster.
-- `setup/fresh_certification.yml`: replace local VMs, then install and test one certification.
-- `Vagrantfile`, `setup/hosts/vagrant.yml`: local VM definitions and lifecycle.
-- `setup/cluster/`: bootstrap, CNI, credentials, and cluster verification.
-- `setup/addons/`: opt-in applications and certification tools.
-- `setup/security/`: opt-in host and runtime security tools.
-- `setup/hosts/`: firewall, accounts, shell tools, and clone identity.
-- `setup/maintenance/`: status, drain/recovery, reset, and disk cleanup.
-- `setup/tasks/`, `setup/templates/`, `setup/vars/`: shared implementation and version pins.
-- `inventories/`, `profiles/`: environment inventory examples and version overrides.
-- `tests/`: local task tests and an explicit live network test.
+Inventories select **where** to run, profiles select **what** to prepare, playbooks
+define **how**, and tests verify the deployed environment.
+
+| File or directory | Purpose |
+| --- | --- |
+| `ansible.cfg` | Default inventory, SSH and Ansible behaviour |
+| `Vagrantfile` | VM operating systems, addresses, CPUs, RAM and first-boot provisioning |
+| `setup/inventory`, `inventories/` | Host addresses, roles, SSH account and expected guest OS |
+| `profiles/certifications/` | Certification component selection and study topics |
+| `setup/fresh_certification.yml` | Delete the previous managed VMs, create fresh guests, then install and test the selected certification |
+| `setup/certification_lab.yml` | Configure an existing environment; selects the Linux or Kubernetes workflow |
+| `setup/linux_certification.yml` | Linux tools, services and functional checks |
+| `setup/kubernetes_certification.yml` | Kubernetes, selected add-ons, client initialization and certification checks |
+| `setup/kube_cluster.yml`, `setup/fresh_cluster.yml` | Configure the base cluster, or recreate its VMs first |
+| `setup/hosts/` | VM lifecycle, guest preparation and controller clients |
+| `setup/cluster/`, `setup/addons/`, `setup/security/` | Kubernetes bootstrap and optional workload/security installers |
+| `setup/tasks/`, `setup/templates/` | Shared configuration tasks and resource templates |
+| `setup/vars/common.yml`, `setup/vars/linux.yml` | Tool versions and shared settings; Linux packages, services and syllabus commands |
+| `setup/maintenance/` | Cluster status, reset, recovery and expendable-cache cleanup |
+| `tests/linux.yml`, `tests/certification.yml`, `tests/tasks/` | Live environment checks and certification-specific scenarios |
+| `scripts/validate_playbooks.sh` | Syntax, lint and local semantic validation |
+| `scripts/vagrant.sh`, `scripts/hyperv_setup.ps1` | VM command wrapper and Windows VM-lifecycle launch option |
+| `docs/` | Human study workflows, syllabus mapping and compatibility references |
+| `artifacts/` | Ignored local keys, kubeconfigs, UI credentials, caches and verification reports |
+
+## Run a certification lab
+
+Run commands from the repository directory with `.venv` activated. For an
+existing Kubernetes lab, select one profile, for example CAPA:
+
+```bash
+ansible-playbook -i setup/inventory setup/certification_lab.yml \
+  -e @profiles/certifications/capa.yml
+```
+
+For a fresh local certification environment on macOS, use
+`setup/fresh_certification.yml` with the same inventory and profile. On WSL,
+the Windows launch command below provides the VM-management privileges:
+
+```bash
+pwsh.exe -NoProfile -File "$(wslpath -w scripts/hyperv_setup.ps1)" \
+  -StartLab -WslDistribution "$WSL_DISTRO_NAME" -LinuxUser "$(id -un)" \
+  -LabRepository "$PWD" -Certifications capa
+```
+
+A fresh certification run deletes **all managed lab VMs and their writable disks**,
+then creates only the selected environment. To keep the other Linux guest, use
+the targeted Linux workflow in the [Linux guide](docs/linux-certifications.md).
+Normal configuration runs use `setup/certification_lab.yml` and do not recreate VMs.
+
+Connect with SSH for Linux exercises or use the selected Kubernetes context and
+clients for Kubernetes exercises. Read `artifacts/access/current.yml` for selected
+web interfaces. Recheck an existing environment with its matching inventory:
+
+```bash
+ansible-playbook -i setup/inventory tests/certification.yml \
+  -e @profiles/certifications/capa.yml
+ansible-playbook -i inventories/lfcs.ini tests/linux.yml \
+  -e @profiles/certifications/lfcs.yml
+ansible-playbook -i inventories/lfca.ini tests/linux.yml \
+  -e @profiles/certifications/lfca.yml
+```
 
 ## Choose an environment
 
@@ -83,6 +156,8 @@ Connect from the repository root in WSL or macOS with the shared lab key:
 ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.32  # master
 ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.34  # worker-01
 ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.35  # worker-02
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.40  # LFCS / AlmaLinux
+ssh -i artifacts/vagrant/id_ed25519 vboxuser@192.168.101.41  # LFCA / Ubuntu LTS
 ```
 
 Run these commands on the controller; the private key stays there. Fresh
@@ -95,19 +170,9 @@ The VM must be running before SSH can connect. Windows home VMs appear in
 VMs appear in **VirtualBox Manager**. Vagrant uses the same guest account and key
 for managed SSH access.
 
-On Windows, WSL 2 runs Ansible, Vagrant and the certification clients. Vagrant
-uses Windows interoperability and PowerShell to manage Hyper-V. The Ubuntu VMs
-run on the Windows host alongside WSL 2. Ansible configures them over SSH;
-controller-side Kubernetes clients contact the master API. In Ansible output,
-`localhost` therefore means the WSL controller, and `master -> localhost`
-indicates a task delegated from a guest's play to that controller.
-
-```mermaid
-flowchart LR
-  W[WSL 2 controller] -->|Vagrant via PowerShell| H[Windows Hyper-V]
-  H -->|VM lifecycle| V[Ubuntu master and workers]
-  W -->|SSH and Kubernetes API| V
-```
+Ansible runs on WSL or macOS and configures the guests over SSH. In playbook
+output, `localhost` means that controller; `guest -> localhost` marks work
+delegated to it, such as preparing a CLI or fetching a kubeconfig.
 
 ```bash
 ansible-playbook setup/hosts/vagrant.yml
@@ -129,29 +194,10 @@ inventory address, gateway and DNS for subsequent boots. Reserve those static
 addresses outside the router's DHCP pool. macOS uses VirtualBox and defaults to the `en0`
 bridge; override `VAGRANT_LAB_BRIDGE` for a different adapter.
 
-On Windows, run `scripts/hyperv_setup.ps1` in an administrator PowerShell session
-once to enable Hyper-V, grant the current user Hyper-V management access, and
-create the external `kubeadm-lab` switch. Windows may require a restart. Use a new
-Windows sign-in after group membership changes, or run the Vagrant lifecycle
-from an administrator session.
-
-To prepare Hyper-V and run VM provisioning, CPU checks, and the base cluster in
-one administrator session, use PowerShell with this checkout's WSL path:
-
-```powershell
-& '\\wsl.localhost\Ubuntu\home\nklkarthi\github.com\nklkarthi\kubeadm-ansible\scripts\hyperv_setup.ps1' `
-  -StartLab -WslDistribution Ubuntu -LinuxUser nklkarthi `
-  -LabRepository /home/nklkarthi/github.com/nklkarthi/kubeadm-ansible
-```
-
-Adjust the distribution, Linux user and checkout path on another controller.
-If the script reports `restart-required`, restart Windows and repeat it.
-
-For a clean certification lab, add `-Certifications ckad` to the helper command.
-It deletes the previous managed lab VMs and their writable disks, creates new
-guests and installs only the selected certification environment. A comma-separated
-list runs profiles sequentially and stops on failure. See
-[certification execution](docs/certifications.md) for the inventory and profile choices.
+Windows VM creation and deletion require Hyper-V management privileges. Use an
+administrator terminal or the WSL launch command above. It reports any required
+Windows restart. A comma-separated certification list runs fresh labs in sequence
+and stops on failure; use one profile at a time for study.
 
 ```bash
 ansible-playbook setup/hosts/vagrant.yml -e vagrant_state=status
@@ -239,6 +285,7 @@ on a later bootstrap run with `-e verify_network=true`.
 | `setup/addons/bookinfo_deploy.yml` | Matching Bookinfo sample |
 | `setup/addons/istio_addons.yml` | Matching demonstration dashboards |
 | `setup/addons/certification_addons.yml` | Opt-in metrics-server and kube-bench |
+| `setup/addons/loadbalancer.yml` | LoadBalancer practice with an explicitly reserved LAN pool and an external HTTP check |
 | `setup/security/apparmor.yml` | AppArmor and seccomp profile directory |
 | `setup/security/gvisor.yml` | gVisor and its RuntimeClass |
 | `setup/security/falco_install.yml` | Falco runtime security |
@@ -316,6 +363,14 @@ ansible-playbook setup/maintenance/space_cleanup.yml
 
 Cleanup preserves workloads and containerd data. Add
 `-e prune_unused_images=true` only when unused images can be downloaded again.
+To finish with disposable Linux labs, use
+`setup/maintenance/linux_cleanup.yml` as described in the
+[Linux guide](docs/linux-certifications.md#stop-destroy-and-reclaim-space).
+`setup/maintenance/controller_cleanup.yml` clears completed Homebrew downloads
+and pip caches while keeping installed controller tools and `.venv`.
+`setup/maintenance/lab_cleanup.yml` destroys every managed local VM and its
+writable disks, removes obsolete service-access details and clears lab caches.
+Use the Windows launch option for VM deletion from WSL.
 
 ## Maintenance
 

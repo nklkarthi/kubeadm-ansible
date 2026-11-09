@@ -12,6 +12,7 @@ Update the pin, release checksum and Kubernetes range together when changing a r
 | Argo CD | 3.6.1 | 1.34–1.37 |
 | Istio | 1.31.4 | 1.32–1.37; CLI and samples use this same release |
 | metrics-server | 0.9.1 | Check kubelet authentication and serving certificates |
+| MetalLB | 0.16.2 | Optional native installer; requires a reserved LAN address pool and verifies external HTTP access |
 | kube-bench | 0.16.0 | Installation only; select an appropriate CIS benchmark when running it |
 | kube-prometheus-stack | 93.1.0 | Chart declares Kubernetes >=1.25; this repo targets supported cluster minors |
 | cert-manager | 1.21.3 | 1.33–1.36 |
@@ -31,8 +32,9 @@ The controller toolchain uses Ansible Core 2.21.6 with Python 3.12–3.14 on mac
 WSL. Homebrew manages controller tools; the preparation playbook verifies their
 versions against the pins before using them. Guests use their own distribution's
 Python interpreter and APT or DNF packages. Kubernetes operations run on the
-selected Ubuntu control plane with its explicit admin kubeconfig. LFCS and LFCA
-use dedicated AlmaLinux 10.2 guests without Kubernetes.
+selected Ubuntu control plane with its explicit admin kubeconfig. LFCS uses an
+AlmaLinux 10.2 guest with SELinux; LFCA uses Ubuntu 24.04 LTS with AppArmor.
+Both Linux guests run without Kubernetes.
 
 Controller clients are selected by component in `setup/hosts/controller_tools.yml`.
 The Argo Rollouts Homebrew tap currently provides client 1.10.0 for the 1.10.2

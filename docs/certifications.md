@@ -76,13 +76,13 @@ inventory's cluster before rebuilding it; use a disposable practice cluster.
 Choose one certification at a time. Each profile fixes compatible tool versions
 rather than installing whichever release happens to be newest that day.
 
-| Certification | Components after the functional base | Practice focus |
+| Certification | Prerequisites and component order | Practice focus |
 | --- | --- | --- |
 | KCNA — Kubernetes and Cloud Native Associate | None | Architecture, declarative workloads, service discovery, self-healing, batch workloads, cloud native concepts. |
 | KCSA — Kubernetes and Cloud Native Security Associate | API audit logging | RBAC, Pod Security Admission, NetworkPolicy, secure workload configuration, audit events, threat models. |
 | CKA — Certified Kubernetes Administrator | Metrics → dynamic storage → Traefik Ingress and Gateway API | Administration, etcd backup and restore, scheduling, storage, networking, troubleshooting. HA is a separate opt-in topology. |
-| CKAD — Certified Kubernetes Application Developer | Dynamic storage → Traefik Ingress and Gateway API | Application configuration, probes, multi-container pods, Secrets, Jobs, volumes, routes, updates and rollback. |
-| CKS — Certified Kubernetes Security Specialist | AppArmor → gVisor → Falco → kube-bench → Istio → audit logging → Traefik | Least privilege, host and runtime security, sandboxing, admission, isolation, audit, mTLS and supply-chain exercises. |
+| CKAD — Certified Kubernetes Application Developer | Worker Buildah → metrics → dynamic storage → Traefik Ingress and Gateway API | Image building, application configuration, probes, multi-container pods, Secrets, Jobs, volumes, routes, updates and rollback. |
+| CKS — Certified Kubernetes Security Specialist | Controller supply-chain clients → worker Buildah → AppArmor → gVisor → Falco → kube-bench → Istio → audit logging → Traefik | Least privilege, host and runtime security, sandboxing, admission, isolation, audit, mTLS and supply-chain exercises. |
 | PCA — Prometheus Certified Associate | Argo CD → kube-prometheus-stack | Instrumentation, ServiceMonitor, PromQL, recording rules, alerts, Alertmanager and Grafana. |
 | ICA — Istio Certified Associate | Istio → Bookinfo | Traffic routing, gateways, subsets, mTLS, authorization and mesh troubleshooting. |
 | CCA — Cilium Certified Associate | Cilium at bootstrap, using the Kubernetes 1.36 profile | Policy, connectivity, Hubble, ClusterMesh and BGP. Additional mesh networking must use distinct cluster identities and address ranges. |
@@ -92,9 +92,9 @@ rather than installing whichever release happens to be newest that day.
 | OTCA — OpenTelemetry Certified Associate | OpenTelemetry Collector | OTLP receivers, processors, logs, metrics, traces, API/SDK instrumentation and telemetry debugging. |
 | KCA — Kyverno Certified Associate | Kyverno controllers and matching controller-side CLI | Mutation, validation, CEL policies, generation, image verification and policy testing. |
 | CNPA — Cloud Native Platform Engineering Associate | Argo CD → Backstage | Developer portal, self-service, GitOps delivery, platform concepts and governance. |
-| CNPE — Certified Cloud Native Platform Engineer | Argo CD → Istio → monitoring → storage → Traefik → Workflows → Rollouts → Collector → Kyverno → Crossplane → Backstage | Platform APIs, delivery, self-service, operations, observability, security and policy. Uses the compatible Kubernetes 1.36 profile. |
+| CNPE — Certified Cloud Native Platform Engineer | Controller supply-chain clients → worker Buildah → metrics → Argo CD → Istio → monitoring → audit logging → storage → Traefik → Workflows → Rollouts → Collector → Kyverno → Crossplane → Backstage | Platform APIs, delivery, self-service, operations, observability, security and policy. Uses the compatible Kubernetes 1.36 profile. |
 | LFCS — Linux Foundation Certified System Administrator | Dedicated AlmaLinux guest; no Kubernetes | SELinux, users/ACLs, services, time, packages, networking, LVM/filesystems, containers, libvirt and recovery. |
-| LFCA — Linux Foundation Certified IT Associate | Dedicated AlmaLinux guest; no Kubernetes | Linux and system administration fundamentals, networking, Git, containers, security, cloud models and IT project management. |
+| LFCA — Linux Foundation Certified IT Associate | Dedicated Ubuntu 24.04 LTS guest; no Kubernetes | Learning environment for the knowledge-based exam: Linux, APT/dpkg, services, networking, security, Git, containers, cloud and project-management concepts. |
 
 Automated checks exercise specific behavior and record their scope in ignored
 `artifacts/certification-results/` files. They do not replace the study and
@@ -134,7 +134,7 @@ ansible-playbook -i inventories/lfcs.ini setup/certification_lab.yml \
   -e @profiles/certifications/lfcs.yml
 ```
 
-SELinux stays enforcing. Practice services and storage use the dedicated Linux
+LFCS keeps SELinux enforcing; LFCA uses Ubuntu's AppArmor and UFW. Practice services and storage use the dedicated Linux
 guest so that Linux administration exercises cannot change the Kubernetes hosts.
 The storage checks create a small sparse loop device, verify LVM growth and
 filesystem persistence, and remove that device afterwards.
@@ -153,11 +153,12 @@ the main Kubernetes VMs; it preserves other Linux guests.
 `setup/fresh_certification.yml` instead deletes all managed VMs before creating
 the selected certification environment.
 
-The [LFCS syllabus](https://training.linuxfoundation.org/certification/linux-foundation-certified-sysadmin-lfcs/)
-is distribution-independent and explicitly includes SELinux. These Linux profiles
-use AlmaLinux's official Hyper-V image for the RHEL-family exercises. Rocky Linux
-uses the same families of administration tools; a separate Ubuntu Server lab is
-useful for Debian-family differences. These profiles currently configure AlmaLinux.
+The [Linux study guide](linux-certifications.md) maps all LFCS objectives to
+prepared tools and exercises. LFCS uses AlmaLinux for the RHEL-family skills;
+LFCA uses Ubuntu LTS for Debian-family practice. LFCA is a multiple-choice exam,
+so its automated checks validate the learning environment rather than exam tasks.
+The [practical lab guide](practical-labs.md) covers task-driven LFCS, CKA, CKS, CNPE
+and CKAD workflows, with verification and cleanup.
 
 | Area | AlmaLinux / Rocky Linux | Ubuntu Server |
 | --- | --- | --- |
@@ -293,6 +294,7 @@ active UI endpoints and access refresh commands.
 | Selected component | Controller clients |
 | --- | --- |
 | Kubernetes base | `kubectl`, Helm and crane |
+| CKA, CKAD, CKS and CNPE practice | Kustomize |
 | Argo CD | `argocd` and Kustomize |
 | Argo Workflows | `argo` |
 | Argo Rollouts | `kubectl argo rollouts`, from the official `argoproj/tap` |
@@ -301,6 +303,7 @@ active UI endpoints and access refresh commands.
 | Kyverno | `kyverno` |
 | Crossplane | `crossplane` |
 | Backstage development | Node 24, npm, Corepack and Yarn 4 |
+| CKS and CNPE supply-chain practice | Syft, Cosign, Trivy and KubeLinter |
 | OpenTelemetry | `kubectl` for the Collector and SDK packages in the application being instrumented |
 | Linux-only labs | SSH and Ansible on the controller; Linux administration tools inside the selected guest |
 
